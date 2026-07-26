@@ -858,9 +858,9 @@ def _load_kompress(
         try:
             return _load_kompress_onnx(model_id, use_coreml=False, allow_download=allow_download)
         except KompressModelNotCached:
-            # Cache-only miss: don't trigger a PyTorch network download as a
-            # fallback — propagate so the caller can defer.
             if not allow_download:
+                if _is_pytorch_available():
+                    return _load_kompress_pytorch(model_id, device, allow_download=False)
                 raise
         except Exception as e:
             logger.warning("ONNX load failed for %s, trying PyTorch: %s", model_id, e)

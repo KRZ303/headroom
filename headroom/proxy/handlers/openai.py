@@ -7509,10 +7509,6 @@ class OpenAIHandlerMixin:
                         nonlocal ws_upstream_frames_total, ws_last_upstream_frame_type
                         nonlocal ws_ttfb_ms
 
-                        memory_enabled = bool(
-                            self.memory_handler and memory_user_id and ws_memory_tools_allowed
-                        )
-
                         # Per-response state (reset after each response.completed)
                         event_buffer: list[str] = []
                         decided = False
@@ -7751,7 +7747,11 @@ class OpenAIHandlerMixin:
                                     ws_cache_write_tokens_total += usage_cache_write_tokens
                                     ws_uncached_input_tokens_total += usage_uncached_tokens
 
-                                if not memory_enabled:
+                                if not (
+                                    self.memory_handler
+                                    and memory_user_id
+                                    and ws_memory_tools_allowed
+                                ):
                                     if event_type == "response.completed":
                                         response_completed_seen = True
                                         await _record_ws_response_metrics()
@@ -7782,18 +7782,18 @@ class OpenAIHandlerMixin:
                                             for buf in event_buffer:
                                                 await websocket.send_text(buf)
                                             event_buffer.clear()
+                                        continue
 
                                     elif event_type == "response.completed":
                                         # No output items at all — flush
                                         decided = True
-                                for buf in event_buffer:
-                                    await websocket.send_text(buf)
-                                event_buffer.clear()
-                                await _record_ws_response_metrics()
-                                _reset()
-                                response_completed_seen = True
-
-                                continue
+                                        for buf in event_buffer:
+                                            await websocket.send_text(buf)
+                                        event_buffer.clear()
+                                        await _record_ws_response_metrics()
+                                        _reset()
+                                        response_completed_seen = True
+                                    continue
 
                                 # --- Phase 2a: Suppress mode (memory response) ---
                                 if suppress_response:

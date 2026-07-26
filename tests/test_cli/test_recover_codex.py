@@ -761,33 +761,34 @@ def test_recovery_keeps_newest_divergent_rollout_and_backs_up_both(
     sys.platform == "win32" or not hasattr(socket, "AF_UNIX"),
     reason="requires POSIX Unix domain sockets",
 )
-def test_recovery_records_sockets_and_secures_both_backups(tmp_path: Path) -> None:
-    target = tmp_path / "codex"
-    source = tmp_path / "headroom-codex-home-broken"
-    target.mkdir(mode=0o755)
-    source.mkdir(mode=0o755)
-    source_history = source / "history.jsonl"
-    source_history.write_text('{"session_id":"source"}\n', encoding="utf-8")
-    source_history.chmod(0o644)
-    socket_path = source / "codex.sock"
-    fifo_path = source / "codex.pipe"
-    os.mkfifo(fifo_path)
+def test_recovery_records_sockets_and_secures_both_backups() -> None:
+    with tempfile.TemporaryDirectory(prefix="hr-codex-") as temp_dir:
+        target = Path(temp_dir) / "target"
+        source = Path(temp_dir) / "source"
+        target.mkdir(mode=0o755)
+        source.mkdir(mode=0o755)
+        source_history = source / "history.jsonl"
+        source_history.write_text('{"session_id":"source"}\n', encoding="utf-8")
+        source_history.chmod(0o644)
+        socket_path = source / "codex.sock"
+        fifo_path = source / "codex.pipe"
+        os.mkfifo(fifo_path)
 
-    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as codex_socket:
-        codex_socket.bind(str(socket_path))
-        report = recover_codex_home(source=source, target=target)
+        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as codex_socket:
+            codex_socket.bind(str(socket_path))
+            report = recover_codex_home(source=source, target=target)
 
-    pinned = report.backup_dir / "source-pinned"
-    target_backup = report.backup_dir / "target-before"
-    assert "codex.sock" in report.skipped_runtime
-    assert "codex.pipe" in report.skipped_runtime
-    assert not (pinned / "codex.sock").exists()
-    assert not (pinned / "codex.pipe").exists()
-    assert stat.S_IMODE(report.backup_dir.stat().st_mode) == 0o700
-    assert stat.S_IMODE(pinned.stat().st_mode) == 0o700
-    assert stat.S_IMODE(target_backup.stat().st_mode) == 0o700
-    assert stat.S_IMODE((pinned / "history.jsonl").stat().st_mode) == 0o600
-    assert stat.S_IMODE((report.backup_dir / "manifest.json").stat().st_mode) == 0o600
+        pinned = report.backup_dir / "source-pinned"
+        target_backup = report.backup_dir / "target-before"
+        assert "codex.sock" in report.skipped_runtime
+        assert "codex.pipe" in report.skipped_runtime
+        assert not (pinned / "codex.sock").exists()
+        assert not (pinned / "codex.pipe").exists()
+        assert stat.S_IMODE(report.backup_dir.stat().st_mode) == 0o700
+        assert stat.S_IMODE(pinned.stat().st_mode) == 0o700
+        assert stat.S_IMODE(target_backup.stat().st_mode) == 0o700
+        assert stat.S_IMODE((pinned / "history.jsonl").stat().st_mode) == 0o600
+        assert stat.S_IMODE((report.backup_dir / "manifest.json").stat().st_mode) == 0o600
 
 
 def test_recovery_never_propagates_source_deletions(tmp_path: Path) -> None:

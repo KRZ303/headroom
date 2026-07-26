@@ -142,6 +142,84 @@ class _ToolFailingMemoryHandler(_MemoryHandler):
 
 
 @pytest.mark.asyncio
+async def test_memory_tool_relay_enables_after_first_frame_resolves_user(tmp_path):
+    memory_events = [
+        json.dumps({"type": "response.created", "response": {"id": "r_memory"}}),
+        json.dumps(
+            {
+                "type": "response.output_item.added",
+                "item": {
+                    "type": "function_call",
+                    "name": "memory_save",
+                    "call_id": "call_memory",
+                    "arguments": '{"content":"canary"}',
+                },
+            }
+        ),
+        json.dumps(
+            {
+                "type": "response.output_item.done",
+                "item": {
+                    "type": "function_call",
+                    "name": "memory_save",
+                    "call_id": "call_memory",
+                    "arguments": '{"content":"canary"}',
+                },
+            }
+        ),
+        json.dumps({"type": "response.completed", "response": {"id": "r_memory"}}),
+        json.dumps({"type": "response.created", "response": {"id": "r_final"}}),
+        json.dumps(
+            {
+                "type": "response.output_item.added",
+                "item": {"type": "message", "id": "m_final"},
+            }
+        ),
+        json.dumps({"type": "response.completed", "response": {"id": "r_final"}}),
+    ]
+
+    class ExecutingMemoryHandler(_MemoryHandler):
+        def __init__(self):
+            super().__init__()
+            self.executed = []
+
+        async def _execute_memory_tool(self, name, args, user_id, provider, **_kwargs):
+            self.executed.append((name, args, user_id, provider))
+            return '{"status":"saved"}'
+
+    upstream = _FakeUpstream(memory_events)
+    client = _FakeWebSocket(
+        frames=[_turn("save the canary")],
+        headers={
+            "authorization": "Bearer sk-test",
+            "x-client": "codex",
+            "x-headroom-user-id": "phase6",
+            "x-headroom-cwd": str(tmp_path),
+        },
+        disconnect_after_n_sends=3,
+        hold_after_initial=True,
+    )
+    handler = _DummyOpenAIHandler()
+    memory = ExecutingMemoryHandler()
+    handler.memory_handler = memory
+
+    with patch.dict(sys.modules, {"websockets": _make_fake_websockets_module(upstream)}):
+        await handler.handle_openai_responses_ws(client)
+
+    assert memory.executed == [("memory_save", {"content": "canary"}, "phase6", "openai")], {
+        "upstream": upstream.sent,
+        "client": client.sent_text,
+    }
+    assert all(
+        json.loads(event).get("item", {}).get("type") != "function_call"
+        for event in client.sent_text
+    )
+    assert any(
+        json.loads(event).get("response", {}).get("id") == "r_final" for event in client.sent_text
+    )
+
+
+@pytest.mark.asyncio
 async def test_memory_lookup_runs_for_each_issue_artifact_frame_and_preserves_non_create_frames():
     upstream = _FakeUpstream(
         [
