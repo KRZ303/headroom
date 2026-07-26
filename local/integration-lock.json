@@ -3,7 +3,8 @@
   "integration": {
     "branch": "krz/local-integration",
     "upstream_base": "0994ea04c869939946b91cbe52ceaf46740786be",
-    "assembled_head_before_phase6_glue": "550e2bdc78fe7a31f777c7ea1a3fc7ab4abdb80b"
+    "assembled_head_before_phase6_glue": "550e2bdc78fe7a31f777c7ea1a3fc7ab4abdb80b",
+    "verified_candidate_source": "2f2bab3d1fb85d834b321673affcff382769ae00"
   },
   "topics": [
     {
@@ -85,6 +86,18 @@
     "min_evidence": 5,
     "scratch_min_evidence": 2,
     "global_db_imported": false
+  },
+  "phase6_recovery": {
+    "commit": "2f2bab3d1fb85d834b321673affcff382769ae00",
+    "fixes": [
+      "cache_only_kompress_pytorch_fallback",
+      "codex_ws_dynamic_memory_relay",
+      "isolated_test_process_state"
+    ],
+    "verification": {
+      "focused": "132 passed",
+      "full_local": "9735 passed, 574 skipped"
+    }
   },
   "topology": {
     "project_slot_a": 8787,
