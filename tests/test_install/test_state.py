@@ -154,3 +154,40 @@ def test_delete_manifest_removes_profile_root(monkeypatch, tmp_path: Path) -> No
 
     assert load_manifest("default") is None
     assert not extra_file.parent.exists()
+
+
+def test_load_old_manifest_uses_memory_defaults_and_one_mode_authority(
+    monkeypatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    profile_dir = tmp_path / ".headroom" / "deploy" / "old"
+    profile_dir.mkdir(parents=True)
+    (profile_dir / "manifest.json").write_text(
+        json.dumps(
+            {
+                "profile": "old",
+                "preset": "persistent-service",
+                "runtime_kind": "python",
+                "supervisor_kind": "service",
+                "scope": "user",
+                "provider_mode": "manual",
+                "targets": ["claude"],
+                "port": 8787,
+                "host": "127.0.0.1",
+                "backend": "anthropic",
+                "proxy_mode": "cache",
+                "base_env": {"HEADROOM_MODE": "cache"},
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    loaded = load_manifest("old")
+
+    assert loaded is not None
+    assert loaded.learn_enabled is None
+    assert loaded.memory_storage_mode == "project"
+    assert loaded.traffic_learning_min_evidence == 5
+    assert loaded.memory_project_root == ""
+    assert loaded.proxy_mode == "cache"
+    assert "HEADROOM_MODE" not in loaded.base_env
