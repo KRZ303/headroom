@@ -6,6 +6,11 @@ from headroom.proxy.server import create_app
 from headroom.transforms import kompress_compressor
 
 
+@pytest.fixture(autouse=True)
+def _isolate_kompress_cache(monkeypatch):
+    monkeypatch.setattr(kompress_compressor, "_kompress_cache", {})
+
+
 class _ReadyCompressor:
     def __init__(self, backend="onnx", ready=True, error=None):
         self.backend = backend

@@ -74,8 +74,8 @@ def test_load_kompress_onnx_cache_miss_raises_not_cached(monkeypatch):
         kc._load_kompress_onnx("org/model", allow_download=False)
 
 
-def test_load_kompress_auto_does_not_pytorch_download_on_cache_miss(monkeypatch):
-    """Auto mode must propagate the cache miss, not fall back to a PyTorch fetch."""
+def test_load_kompress_auto_uses_cached_pytorch_after_onnx_cache_miss(monkeypatch):
+    """Auto mode may fall back to PyTorch, but must keep the load cache-only."""
     monkeypatch.setattr(kc, "_kompress_cache", {})
     monkeypatch.setattr(kc, "_selected_backend", lambda: "auto")
     monkeypatch.setattr(kc, "_is_onnx_available", lambda: True)
@@ -84,14 +84,18 @@ def test_load_kompress_auto_does_not_pytorch_download_on_cache_miss(monkeypatch)
     def onnx_not_cached(model_id, *, use_coreml=False, allow_download=True):
         raise KompressModelNotCached(model_id)
 
-    def pytorch_should_not_run(*args, **kwargs):
-        raise AssertionError("PyTorch fallback must not download on a cache-only miss")
+    def pytorch_cached(model_id, device, *, allow_download=True):
+        assert allow_download is False
+        return "model", "tokenizer", "pytorch"
 
     monkeypatch.setattr(kc, "_load_kompress_onnx", onnx_not_cached)
-    monkeypatch.setattr(kc, "_load_kompress_pytorch", pytorch_should_not_run)
+    monkeypatch.setattr(kc, "_load_kompress_pytorch", pytorch_cached)
 
-    with pytest.raises(KompressModelNotCached):
-        kc._load_kompress("org/model", allow_download=False)
+    assert kc._load_kompress("org/model", allow_download=False) == (
+        "model",
+        "tokenizer",
+        "pytorch",
+    )
 
 
 class _StubCompressor:

@@ -7775,6 +7775,7 @@ class OpenAIHandlerMixin:
                             seen_call_ids=ws_learner_seen_call_ids,
                             baseline=False,
                             request_id=request_id,
+                            request_context=memory_request_ctx,
                         )
                         store_forced = _ensure_chatgpt_responses_store_false(
                             inner_payload,

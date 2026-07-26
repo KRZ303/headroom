@@ -105,6 +105,7 @@ def test_disable_noop_when_agent_not_detected(
 def test_unwrap_codex_removes_headroom_installed_serena(
     runner: CliRunner, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path / ".codex"))
     monkeypatch.setenv("HEADROOM_WORKSPACE_DIR", str(tmp_path / ".headroom"))
     spec = build_serena_spec("codex")
     record_install("codex", spec)
