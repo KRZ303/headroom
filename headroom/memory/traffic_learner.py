@@ -35,6 +35,7 @@ from typing import TYPE_CHECKING, Any, ClassVar
 if TYPE_CHECKING:
     from headroom.learn.models import ProjectInfo
     from headroom.memory.backends.local import LocalBackend
+    from headroom.proxy.memory_handler import ResolvedMemoryTarget
 
 logger = logging.getLogger(__name__)
 
@@ -60,6 +61,42 @@ _BASH_VOLATILE_SUFFIX_RE = re.compile(
     r"|\s+-A\s*\d+|\s+-B\s*\d+|\s+-C\s*\d+"
     r"|\s+2>&1|\s+2>/dev/null)+\s*$"
 )
+
+_HARNESS_USER_PREFIXES = (
+    "another language model started to solve this problem and produced a summary",
+    "<app-context>",
+    "<codex_delegation>",
+    "<environment_context>",
+    "<heartbeat>",
+    "<permissions instructions>",
+    "<skills_instructions>",
+    "# agents.md instructions for ",
+    "you are in a fork of an existing codex thread",
+)
+_MEMORY_CONTEXT_MARKERS = ("\n\n## relevant memories", "\n## relevant memories")
+_AMBIENT_CONTEXT_MARKERS = ("<in-app-browser-context",)
+
+
+def _canonicalize_user_text(text: str) -> str:
+    """Remove proxy- or client-appended context from a user-role message."""
+    canonical = text or ""
+    folded = canonical.casefold()
+    if folded.lstrip().startswith("## relevant memories"):
+        return ""
+    markers = (*_MEMORY_CONTEXT_MARKERS, *_AMBIENT_CONTEXT_MARKERS)
+    indexes = [folded.find(marker) for marker in markers]
+    indexes = [index for index in indexes if index >= 0]
+    if indexes:
+        canonical = canonical[: min(indexes)]
+    return canonical.strip()
+
+
+def _is_learnable_user_text(text: str) -> bool:
+    canonical = _canonicalize_user_text(text)
+    if not canonical:
+        return False
+    folded = canonical.lstrip().casefold()
+    return not any(folded.startswith(prefix) for prefix in _HARNESS_USER_PREFIXES)
 
 
 # =============================================================================
@@ -390,6 +427,21 @@ def _drop_contradictions(patterns: list[ExtractedPattern]) -> list[ExtractedPatt
 # =============================================================================
 
 
+@dataclass
+class _TargetState:
+    target: ResolvedMemoryTarget | None
+    backend: LocalBackend | None
+    user_id: str
+    tool_history: list[dict[str, Any]] = field(default_factory=list)
+    pattern_counts: dict[str, tuple[ExtractedPattern, int]] = field(default_factory=dict)
+    saved_hashes: set[str] = field(default_factory=set)
+    persisted_ids: dict[str, str] = field(default_factory=dict)
+    hydrated: bool = False
+    hydrate_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    flush_dirty: bool = False
+    last_flush_at: float = 0.0
+
+
 class TrafficLearner:
     """Extracts learnable patterns from live proxy traffic.
 
@@ -424,19 +476,21 @@ class TrafficLearner:
         self.agent_type = agent_type
         self._max_history = max_history
         self._min_evidence = min_evidence
+        self._legacy_state = _TargetState(None, backend, user_id)
+        self._target_states: dict[tuple[str, str, str, str, str], _TargetState] = {}
 
         # Recent tool call history for error→recovery matching
-        self._tool_history: list[dict[str, Any]] = []
+        self._tool_history = self._legacy_state.tool_history
 
         # Pattern accumulator: hash → (pattern, count)
-        self._pattern_counts: dict[str, tuple[ExtractedPattern, int]] = {}
+        self._pattern_counts = self._legacy_state.pattern_counts
 
         # Dedup: hashes of patterns already saved to DB
-        self._saved_hashes: set[str] = set()
+        self._saved_hashes = self._legacy_state.saved_hashes
         # content_hash → memory.id for persisted rows. Lets re-sightings
         # bump the existing row's evidence_count instead of creating a
         # duplicate row.
-        self._persisted_ids: dict[str, str] = {}
+        self._persisted_ids = self._legacy_state.persisted_ids
         self._dedup_window = dedup_window
 
         # Stats
@@ -445,7 +499,9 @@ class TrafficLearner:
         self._requests_processed = 0
 
         # Background save queue
-        self._save_queue: asyncio.Queue[ExtractedPattern] = asyncio.Queue(maxsize=100)
+        self._save_queue: asyncio.Queue[tuple[_TargetState, ExtractedPattern]] = asyncio.Queue(
+            maxsize=100
+        )
         self._save_task: asyncio.Task[None] | None = None
         self._stopping = False
 
@@ -464,14 +520,15 @@ class TrafficLearner:
     # =========================================================================
 
     def set_backend(self, backend: LocalBackend) -> None:
-        """Set or update the memory backend."""
+        """Set the legacy backend for compatibility with direct users."""
         self._backend = backend
+        self._legacy_state.backend = backend
 
     async def start(self) -> None:
         """Start the background save worker and flush worker."""
         # Hydrate persisted dedup state before workers spin up so cross-session
         # re-sightings bump existing rows instead of creating duplicates.
-        await self._hydrate_persisted_state()
+        await self._ensure_hydrated(self._legacy_state)
         if self._save_task is None or self._save_task.done():
             self._save_task = asyncio.create_task(self._save_worker())
         if self._flush_task is None or self._flush_task.done():
@@ -499,11 +556,11 @@ class TrafficLearner:
         # Drain any patterns left in the queue (worker may have been cancelled mid-flight)
         while not self._save_queue.empty():
             try:
-                pattern = self._save_queue.get_nowait()
-                if self._backend is not None:
-                    await self._backend.save_memory(
+                state, pattern = self._save_queue.get_nowait()
+                if state.backend is not None:
+                    await state.backend.save_memory(
                         content=pattern.content,
-                        user_id=self._user_id,
+                        user_id=state.user_id,
                         importance=pattern.importance,
                         metadata={
                             "source": "traffic_learner",
@@ -518,27 +575,38 @@ class TrafficLearner:
 
         # Final flush on shutdown — bypass debounce.
         await self.flush_to_file()
+        for state in self._target_states.values():
+            await self._flush_state_to_file(state)
 
     async def _flush_worker(self) -> None:
         """Background worker: call flush_to_file when dirty, rate-limited."""
         while True:
             try:
                 await asyncio.sleep(2.0)
-                if not self._flush_dirty:
-                    continue
-                if time.monotonic() - self._last_flush_at < FLUSH_DEBOUNCE_SECONDS:
-                    continue
-                # Reset before flushing so patterns accumulated during the
-                # flush still trigger a follow-up.
-                self._flush_dirty = False
-                self._last_flush_at = time.monotonic()
-                await self.flush_to_file()
+                if self._flush_dirty:
+                    self._legacy_state.flush_dirty = True
+                for state in [self._legacy_state, *self._target_states.values()]:
+                    if not state.flush_dirty:
+                        continue
+                    if time.monotonic() - state.last_flush_at < FLUSH_DEBOUNCE_SECONDS:
+                        continue
+                    state.flush_dirty = False
+                    state.last_flush_at = time.monotonic()
+                    if state is self._legacy_state:
+                        self._flush_dirty = False
+                        await self.flush_to_file()
+                    else:
+                        await self._flush_state_to_file(state)
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.warning("Traffic learner flush worker iteration failed: %s", e)
 
-    async def flush_to_file(self) -> None:
+    async def flush_to_file(self, target: ResolvedMemoryTarget | None = None) -> None:
+        """Flush one resolved target, or the legacy target for direct callers."""
+        await self._flush_state_to_file(self._state_for(target))
+
+    async def _flush_state_to_file(self, state: _TargetState) -> None:
         """Flush patterns (persisted + in-memory) to agent-native context files.
 
         Buckets patterns by project via longest-matching file path in content
@@ -553,10 +621,18 @@ class TrafficLearner:
             logger.debug("Traffic learner flush: learn package unavailable (%s)", e)
             return
 
-        # Resolve plugin: explicit agent_type wins, else first detected plugin.
+        target = state.target
+        # Resolved request targets may write native files only for an exact
+        # project root. Global, user and rootless project-id targets stop here.
+        if target is not None and (
+            target.scope.mode.value != "project" or target.project_root is None
+        ):
+            return
+
+        agent = target.agent if target is not None else self.agent_type
         try:
-            if self.agent_type and self.agent_type != "unknown":
-                plugin = get_plugin(self.agent_type)
+            if agent and agent != "unknown":
+                plugin = get_plugin(agent)
             else:
                 detected = auto_detect_plugins()
                 if not detected:
@@ -564,11 +640,11 @@ class TrafficLearner:
                     return
                 plugin = detected[0]
         except KeyError:
-            logger.debug("No learn plugin for agent_type=%s", self.agent_type)
+            logger.debug("No learn plugin for agent_type=%s", agent)
             return
 
         # Gather patterns: persisted rows + in-memory accumulator, deduped.
-        patterns = self._collect_all_patterns()
+        patterns = self._collect_all_patterns(state)
         if not patterns:
             return
 
@@ -585,15 +661,26 @@ class TrafficLearner:
         if not patterns:
             return
 
-        # Bucket patterns by project.
-        if self._project_roots_cache is None:
+        # Resolved traffic writes to its exact request root only. Legacy direct
+        # users retain discovery behavior for backwards compatibility.
+        if target is not None:
             try:
-                self._project_roots_cache = plugin.discover_projects()
+                roots = [
+                    project
+                    for project in plugin.discover_projects()
+                    if project.project_path.resolve() == target.project_root.resolve()
+                ]
             except Exception as e:
                 logger.warning("discover_projects failed: %s", e)
-                self._project_roots_cache = []
-
-        roots = self._project_roots_cache
+                roots = []
+        else:
+            if self._project_roots_cache is None:
+                try:
+                    self._project_roots_cache = plugin.discover_projects()
+                except Exception as e:
+                    logger.warning("discover_projects failed: %s", e)
+                    self._project_roots_cache = []
+            roots = self._project_roots_cache
         if not roots:
             logger.debug("Traffic learner flush: no projects discovered, skipping")
             return
@@ -629,7 +716,7 @@ class TrafficLearner:
             except Exception as e:
                 logger.warning("Traffic learner write failed for %s: %s", project_path, e)
 
-    def _collect_all_patterns(self) -> list[ExtractedPattern]:
+    def _collect_all_patterns(self, state: _TargetState | None = None) -> list[ExtractedPattern]:
         """Merge persisted (memory.db) + in-memory patterns, deduped by content.
 
         Evidence counts are summed across duplicates.
@@ -638,7 +725,8 @@ class TrafficLearner:
         now = datetime.now(timezone.utc)
 
         # Persisted rows from memory.db
-        db_path = _resolve_backend_db_path(self._backend)
+        state = state or self._legacy_state
+        db_path = _resolve_backend_db_path(state.backend)
         if db_path is not None and db_path.exists():
             try:
                 persisted = _load_persisted_patterns_from_sqlite(db_path)
@@ -654,7 +742,7 @@ class TrafficLearner:
         # In-memory accumulator (patterns not yet persisted). Re-sightings in
         # this session bump last_seen_at to "now" on top of the persisted
         # timestamp so recency ranking reflects live activity.
-        for pattern, count in self._pattern_counts.values():
+        for pattern, count in state.pattern_counts.values():
             h = pattern.content_hash
             if h in by_hash:
                 existing = by_hash[h]
@@ -683,6 +771,24 @@ class TrafficLearner:
         """
         return [pattern for pattern, count in self._pattern_counts.values() if count >= 1]
 
+    def _state_for(self, target: ResolvedMemoryTarget | None) -> _TargetState:
+        if target is None:
+            return self._legacy_state
+        state = self._target_states.get(target.identity)
+        if state is None:
+            state = _TargetState(target, target.backend, target.user_id)
+            self._target_states[target.identity] = state
+        return state
+
+    async def _ensure_hydrated(self, state: _TargetState) -> None:
+        if state.hydrated:
+            return
+        async with state.hydrate_lock:
+            if state.hydrated:
+                return
+            await self._hydrate_persisted_state(state)
+            state.hydrated = True
+
     async def on_tool_result(
         self,
         tool_name: str,
@@ -690,6 +796,7 @@ class TrafficLearner:
         tool_output: str,
         is_error: bool,
         agent_type: str = "unknown",
+        target: ResolvedMemoryTarget | None = None,
     ) -> None:
         """Process a tool call result from proxy traffic.
 
@@ -703,6 +810,8 @@ class TrafficLearner:
             is_error: Whether the tool call failed
             agent_type: Which agent is being proxied
         """
+        state = self._state_for(target)
+        await self._ensure_hydrated(state)
         self._requests_processed += 1
 
         entry = {
@@ -716,25 +825,26 @@ class TrafficLearner:
         }
 
         # Check for error→recovery pattern BEFORE adding to history
-        if not is_error and self._tool_history:
-            patterns = self._extract_error_recovery(entry)
+        if not is_error and state.tool_history:
+            patterns = self._extract_error_recovery(entry, state.tool_history)
             for pattern in patterns:
-                await self._accumulate(pattern)
+                await self._accumulate_for_state(pattern, state)
 
         # Extract environment patterns
         env_patterns = self._extract_environment(entry)
         for pattern in env_patterns:
-            await self._accumulate(pattern)
+            await self._accumulate_for_state(pattern, state)
 
         # Add to history (bounded)
-        self._tool_history.append(entry)
-        if len(self._tool_history) > self._max_history:
-            self._tool_history.pop(0)
+        state.tool_history.append(entry)
+        if len(state.tool_history) > self._max_history:
+            state.tool_history.pop(0)
 
     async def on_messages(
         self,
         messages: list[dict[str, Any]],
         agent_type: str = "unknown",
+        target: ResolvedMemoryTarget | None = None,
     ) -> None:
         """Process message content for preference/architecture patterns.
 
@@ -745,6 +855,8 @@ class TrafficLearner:
             messages: The messages array from the API request
             agent_type: Which agent is being proxied
         """
+        state = self._state_for(target)
+        await self._ensure_hydrated(state)
         for msg in messages[-3:]:  # Only look at recent messages
             role = msg.get("role", "")
             content = msg.get("content", "")
@@ -759,9 +871,12 @@ class TrafficLearner:
                 continue
 
             if role == "user":
-                patterns = self._extract_preferences(content)
+                canonical = _canonicalize_user_text(self._strip_system_reminders(content))
+                if not _is_learnable_user_text(canonical):
+                    continue
+                patterns = self._extract_preferences(canonical)
                 for pattern in patterns:
-                    await self._accumulate(pattern)
+                    await self._accumulate_for_state(pattern, state)
 
     def get_stats(self) -> dict[str, Any]:
         """Get learner statistics."""
@@ -777,7 +892,11 @@ class TrafficLearner:
     # Pattern Extraction
     # =========================================================================
 
-    def _extract_error_recovery(self, success_entry: dict[str, Any]) -> list[ExtractedPattern]:
+    def _extract_error_recovery(
+        self,
+        success_entry: dict[str, Any],
+        history: list[dict[str, Any]] | None = None,
+    ) -> list[ExtractedPattern]:
         """Extract error→recovery patterns.
 
         Looks backward in history for recent errors, then checks if the
@@ -785,10 +904,11 @@ class TrafficLearner:
         """
         patterns: list[ExtractedPattern] = []
         tool_name = success_entry["tool_name"]
+        history = self._tool_history if history is None else history
 
         # Look at recent history for matching errors
-        for i in range(len(self._tool_history) - 1, max(-1, len(self._tool_history) - 6), -1):
-            prev = self._tool_history[i]
+        for i in range(len(history) - 1, max(-1, len(history) - 6), -1):
+            prev = history[i]
             if not prev["is_error"]:
                 continue
 
@@ -1014,7 +1134,9 @@ class TrafficLearner:
           truncation past ``max_chars``.
         """
 
-        cleaned = self._strip_system_reminders(user_text)[:500]
+        cleaned = _canonicalize_user_text(self._strip_system_reminders(user_text))[:500]
+        if not _is_learnable_user_text(cleaned):
+            return []
         correction = self._find_correction(cleaned)
         if correction is None:
             return []
@@ -1177,44 +1299,59 @@ class TrafficLearner:
     # Pattern Accumulation & Persistence
     # =========================================================================
 
-    async def _accumulate(self, pattern: ExtractedPattern) -> None:
+    async def _accumulate(
+        self,
+        pattern: ExtractedPattern,
+        target: ResolvedMemoryTarget | None = None,
+    ) -> None:
         """Accumulate a pattern, saving when evidence threshold is met."""
+        state = self._state_for(target)
+        await self._ensure_hydrated(state)
+        await self._accumulate_for_state(pattern, state)
+
+    async def _accumulate_for_state(
+        self,
+        pattern: ExtractedPattern,
+        state: _TargetState,
+    ) -> None:
         self._patterns_extracted += 1
-        self._flush_dirty = True
+        state.flush_dirty = True
+        if state is self._legacy_state:
+            self._flush_dirty = True
         h = pattern.content_hash
 
         # Already saved — bump the persisted row's evidence_count rather
         # than creating a duplicate.
-        if h in self._saved_hashes:
-            memory_id = self._persisted_ids.get(h)
+        if h in state.saved_hashes:
+            memory_id = state.persisted_ids.get(h)
             if memory_id is not None:
-                await self._bump_persisted_evidence(memory_id)
+                await self._bump_persisted_evidence(memory_id, state)
             return
 
         # Accumulate evidence
-        if h in self._pattern_counts:
-            existing, count = self._pattern_counts[h]
+        if h in state.pattern_counts:
+            existing, count = state.pattern_counts[h]
             count += 1
-            self._pattern_counts[h] = (existing, count)
+            state.pattern_counts[h] = (existing, count)
         else:
-            self._pattern_counts[h] = (pattern, 1)
+            state.pattern_counts[h] = (pattern, 1)
             return  # First sighting — wait for more evidence
 
         # Check if evidence threshold met
-        _, count = self._pattern_counts[h]
+        _, count = state.pattern_counts[h]
         if count >= self._min_evidence:
             # Ready to save
-            del self._pattern_counts[h]
-            self._saved_hashes.add(h)
+            del state.pattern_counts[h]
+            state.saved_hashes.add(h)
             # Trim saved hashes to prevent unbounded growth
-            if len(self._saved_hashes) > self._dedup_window:
+            if len(state.saved_hashes) > self._dedup_window:
                 # Remove oldest (arbitrary, set is unordered, but prevents growth)
-                self._saved_hashes.pop()
+                state.saved_hashes.pop()
 
             # Persist the real accumulated count, not the dataclass default.
             pattern.evidence_count = count
             try:
-                self._save_queue.put_nowait(pattern)
+                self._save_queue.put_nowait((state, pattern))
             except asyncio.QueueFull:
                 logger.debug("Traffic learner save queue full, dropping pattern")
 
@@ -1222,14 +1359,14 @@ class TrafficLearner:
         """Background worker that persists patterns to memory backend."""
         while True:
             try:
-                pattern = await self._save_queue.get()
-                if self._backend is None:
+                state, pattern = await self._save_queue.get()
+                if state.backend is None:
                     continue
 
                 now_iso = datetime.now(timezone.utc).isoformat()
-                memory = await self._backend.save_memory(
+                memory = await state.backend.save_memory(
                     content=pattern.content,
-                    user_id=self._user_id,
+                    user_id=state.user_id,
                     importance=pattern.importance,
                     metadata={
                         "source": "traffic_learner",
@@ -1244,7 +1381,7 @@ class TrafficLearner:
                 # Track id so future re-sightings bump this row.
                 memory_id = getattr(memory, "id", None)
                 if memory_id is not None:
-                    self._persisted_ids[pattern.content_hash] = memory_id
+                    state.persisted_ids[pattern.content_hash] = memory_id
                 logger.debug(f"Traffic learner saved pattern: {pattern.content[:80]}")
 
             except asyncio.CancelledError:
@@ -1252,14 +1389,15 @@ class TrafficLearner:
             except Exception as e:
                 logger.warning(f"Traffic learner save failed: {e}")
 
-    async def _hydrate_persisted_state(self) -> None:
+    async def _hydrate_persisted_state(self, state: _TargetState | None = None) -> None:
         """Load existing traffic_learner rows into _saved_hashes / _persisted_ids.
 
         Runs once at start() so re-sightings across process restarts bump the
         existing row rather than inserting a duplicate. Read-only; if the DB
         is absent or unreadable we simply skip.
         """
-        db_path = _resolve_backend_db_path(self._backend)
+        state = state or self._legacy_state
+        db_path = _resolve_backend_db_path(state.backend)
         if db_path is None or not db_path.exists():
             return
 
@@ -1307,23 +1445,28 @@ class TrafficLearner:
             else:
                 key = _normalize_hash_key(category, content, metadata)
             h = hashlib.sha256(key.encode()).hexdigest()[:16]
-            self._saved_hashes.add(h)
+            state.saved_hashes.add(h)
             # If multiple rows share the same content (legacy duplicates),
             # last-wins — we only need one id to target the bump.
-            self._persisted_ids[h] = memory_id
+            state.persisted_ids[h] = memory_id
 
-    async def _bump_persisted_evidence(self, memory_id: str) -> None:
+    async def _bump_persisted_evidence(
+        self,
+        memory_id: str,
+        state: _TargetState | None = None,
+    ) -> None:
         """Atomically increment a persisted row's metadata.evidence_count."""
-        db_path = _resolve_backend_db_path(self._backend)
+        state = state or self._legacy_state
+        db_path = _resolve_backend_db_path(state.backend)
         if db_path is None or not db_path.exists():
             return
 
         now_iso = datetime.now(timezone.utc).isoformat()
 
-        def _bump() -> None:
+        def _bump() -> bool:
             conn = sqlite3.connect(str(db_path))
             try:
-                conn.execute(
+                cursor = conn.execute(
                     "UPDATE memories SET metadata = json_set("
                     "metadata, '$.evidence_count', "
                     "COALESCE(json_extract(metadata, '$.evidence_count'), 0) + 1, "
@@ -1332,13 +1475,25 @@ class TrafficLearner:
                     (now_iso, memory_id),
                 )
                 conn.commit()
+                return cursor.rowcount > 0
             finally:
                 conn.close()
 
         try:
-            await asyncio.to_thread(_bump)
+            updated = await asyncio.to_thread(_bump)
         except Exception as e:
             logger.debug("Traffic learner evidence bump failed for %s: %s", memory_id, e)
+            return
+        refresh = getattr(state.backend, "refresh_memory_indexes", None)
+        if updated and refresh is not None:
+            try:
+                await refresh(memory_id)
+            except Exception as e:
+                logger.debug(
+                    "Traffic learner evidence index refresh failed for %s: %s",
+                    memory_id,
+                    e,
+                )
 
     # =========================================================================
     # Convenience: Extract from Anthropic messages format
@@ -1394,6 +1549,7 @@ class TrafficLearner:
                         "input": tool_use.get("input", {}),
                         "output": str(result_content),
                         "is_error": block.get("is_error", False) or _is_error(str(result_content)),
+                        "call_id": tool_use_id,
                     }
                 )
 
@@ -1682,7 +1838,15 @@ def _patterns_to_recommendations(patterns: list[ExtractedPattern]) -> list:
             items.sort(key=lambda p: p.evidence_count, reverse=True)
         if not items:
             continue
-        bullets = "\n".join(f"- {p.content}" for p in items)
+        preserve_prior_items = category is not PatternCategory.ERROR_RECOVERY
+        bullets = "\n".join(
+            (
+                f"- {p.content} <!-- headroom:pattern-id:{p.content_hash} -->"
+                if preserve_prior_items
+                else f"- {p.content}"
+            )
+            for p in items
+        )
         recs.append(
             Recommendation(
                 target=target,
@@ -1690,6 +1854,7 @@ def _patterns_to_recommendations(patterns: list[ExtractedPattern]) -> list:
                 content=bullets,
                 confidence=max((p.importance for p in items), default=0.5),
                 evidence_count=sum(p.evidence_count for p in items),
+                preserve_prior_items=preserve_prior_items,
             )
         )
     return recs

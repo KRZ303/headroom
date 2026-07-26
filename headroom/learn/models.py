@@ -163,6 +163,7 @@ class Recommendation:
     # above one-off rules because their waste scales with repetition.
     is_loop_guardrail: bool = False
     loop_occurrences: int = 0  # Repetitions of the loop this rule guards against
+    preserve_prior_items: bool = False
 
 
 @dataclass

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import re
 from abc import ABC, abstractmethod
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -109,6 +110,39 @@ def _build_section(recommendations: list[Recommendation]) -> str:
 
 # Matches the "*~N tokens/session saved*" annotation emitted by _build_section.
 _TOKENS_ANNOTATION_PATTERN = re.compile(r"\*~([\d,]+) tokens/session saved\*\n?")
+_PATTERN_ID_PATTERN = re.compile(r"<!--\s*headroom:pattern-id:([^\s>]+)\s*-->\s*$")
+
+
+def _merge_markdown_items(new_content: str, prior_content: str) -> str | None:
+    """Merge simple markdown bullets, preferring new text for stable IDs."""
+
+    def _items(content: str) -> list[tuple[str | None, str, str]] | None:
+        lines = [line.strip() for line in content.splitlines() if line.strip()]
+        if any(not line.startswith("- ") for line in lines):
+            return None
+        items: list[tuple[str | None, str, str]] = []
+        for line in lines:
+            match = _PATTERN_ID_PATTERN.search(line)
+            pattern_id = match.group(1) if match else None
+            visible = _PATTERN_ID_PATTERN.sub("", line).strip().casefold()
+            items.append((pattern_id, visible, line))
+        return items
+
+    new_items = _items(new_content)
+    prior_items = _items(prior_content)
+    if new_items is None or prior_items is None:
+        return None
+    merged: list[str] = []
+    seen_ids: set[str] = set()
+    seen_content: set[str] = set()
+    for pattern_id, visible, line in (*new_items, *prior_items):
+        if (pattern_id is not None and pattern_id in seen_ids) or visible in seen_content:
+            continue
+        if pattern_id is not None:
+            seen_ids.add(pattern_id)
+        seen_content.add(visible)
+        merged.append(line)
+    return "\n".join(merged)
 
 
 def extract_marker_block(file_content: str) -> str | None:
@@ -176,9 +210,20 @@ def _merge_recommendations(
     prior = _parse_prior_recommendations(_read_text_tolerant(file_path))
     if not prior:
         return new_recommendations
-    new_sections = {r.section for r in new_recommendations}
+    prior_by_section = {r.section: r for r in prior}
+    merged_new: list[Recommendation] = []
+    for recommendation in new_recommendations:
+        prior_recommendation = prior_by_section.get(recommendation.section)
+        if recommendation.preserve_prior_items and prior_recommendation is not None:
+            merged_content = _merge_markdown_items(
+                recommendation.content, prior_recommendation.content
+            )
+            if merged_content is not None:
+                recommendation = replace(recommendation, content=merged_content)
+        merged_new.append(recommendation)
+    new_sections = {r.section for r in merged_new}
     carried = [p for p in prior if p.section not in new_sections]
-    return list(new_recommendations) + carried
+    return merged_new + carried
 
 
 def _merge_into_file(file_path: Path, new_recommendations: list[Recommendation]) -> str:

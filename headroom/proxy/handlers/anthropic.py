@@ -2030,20 +2030,19 @@ class AnthropicHandlerMixin:
             # Traffic Learner: Extract patterns from inbound tool results
             if self.traffic_learner:
                 try:
-                    if self.memory_handler and self.memory_handler.is_project_unresolved(
-                        memory_request_ctx
-                    ):
+                    learning_target = (
+                        self.memory_handler.resolve_target(
+                            memory_user_id,
+                            memory_request_ctx,
+                            agent=client or "claude",
+                            provider="anthropic",
+                        )
+                        if memory_request_ctx is not None and memory_user_id and self.memory_handler
+                        else None
+                    )
+                    if learning_target is None:
                         logger.info(f"[{request_id}] Traffic learner skipped: project_unresolved")
                     else:
-                        # Wire backend on first use (lazy init after memory handler is ready)
-                        if (
-                            self.traffic_learner._backend is None
-                            and self.memory_handler
-                            and self.memory_handler.initialized
-                            and self.memory_handler.backend
-                        ):
-                            self.traffic_learner.set_backend(self.memory_handler.backend)
-
                         # Extract tool results from messages and learn from them
                         tool_results = self.traffic_learner.extract_tool_results_from_messages(
                             optimized_messages
@@ -2054,10 +2053,16 @@ class AnthropicHandlerMixin:
                                 tool_input=tr["input"],
                                 tool_output=tr["output"],
                                 is_error=tr["is_error"],
+                                agent_type=learning_target.agent,
+                                target=learning_target,
                             )
 
                         # Also extract preference signals from user messages
-                        await self.traffic_learner.on_messages(optimized_messages)
+                        await self.traffic_learner.on_messages(
+                            optimized_messages,
+                            agent_type=learning_target.agent,
+                            target=learning_target,
+                        )
                 except Exception as e:
                     logger.debug(f"[{request_id}] Traffic learner: {e}")
 
