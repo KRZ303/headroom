@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "integration": {
+    "branch": "krz/local-integration",
+    "upstream_base": "0994ea04c869939946b91cbe52ceaf46740786be",
+    "assembled_head_before_phase6_glue": "550e2bdc78fe7a31f777c7ea1a3fc7ab4abdb80b"
+  },
+  "topics": [
+    {
+      "name": "pr1_codex_project_context",
+      "canonical_source": "8d13ec7a549a8f6ef10a171f770c159ab7661938",
+      "integrated_commit": "461901809359b2ade92abc47f25d603f2589eea1"
+    },
+    {
+      "name": "pr3_fail_closed_memory",
+      "canonical_source": "1bf4ede759560261fa7c70a109f62fa086cc3ea3",
+      "integrated_commit": "1184a84b7dcdd4c67def647b0253167b5f9447da",
+      "reconciliation": {
+        "temporary_phase4_commit": "3a18023da0574a7df8785b8821740e21bc46aa21",
+        "canonical": false,
+        "phase6_ancestry": false,
+        "note": "Only its reviewed PR1+PR3 conflict result was reproduced."
+      }
+    },
+    {
+      "name": "pr2_project_scoped_learner",
+      "canonical_source": "0121d04ff4053a3c1f2b0b52c80035d63e373cbd",
+      "integrated_commit": "78c527de1be6e3518ca22f036d17e1d5e86279fe"
+    },
+    {
+      "name": "pr4_installer_parity",
+      "canonical_source": "c5db47c3b7f2e73cd21ddac3ab2a9fe2a7a3bf9b",
+      "integrated_commit": "412f8da0b439c8ed3ec5390fad2df08f8ee92067"
+    },
+    {
+      "name": "local_manager",
+      "canonical_source": "7083976b11355fb7770c234617ec1fec253e156f",
+      "integrated_commit": "550e2bdc78fe7a31f777c7ea1a3fc7ab4abdb80b"
+    }
+  ],
+  "reviewed_upstream_prs": [
+    {
+      "pr": 502,
+      "pinned_head": "9d45c11233959815da651393c3b3737359497882",
+      "adoption": "functional attribution in PR3"
+    },
+    {
+      "pr": 1304,
+      "pinned_head": "79622faf5804b48504a4d05063846f4a077a9886",
+      "adoption": "functional slice and attribution in PR2"
+    },
+    {
+      "pr": 2334,
+      "pinned_head": "8e8cbd85d2d1530d029868d39e80dc08e62471e8",
+      "adoption": "functional slice and attribution in PR2"
+    },
+    {
+      "pr": 2275,
+      "pinned_head": "58579a67ce7d41f1956b17ea16dc9c43a8041595",
+      "adoption": "functional slice and attribution in PR2"
+    },
+    {
+      "pr": 2293,
+      "pinned_head": "d472bcae1bac723894ef8ce22460bbb678c523ea",
+      "adoption": "functional slice and attribution in PR2"
+    },
+    {
+      "pr": 2295,
+      "pinned_head": "694aa7a4594a3994ae7a1896a3c1f0538feaa857",
+      "adoption": "functional slice and attribution in PR2"
+    }
+  ],
+  "candidate": {
+    "slot": "A",
+    "host": "127.0.0.1",
+    "port": 8787,
+    "required_targets": [
+      "claude",
+      "codex"
+    ],
+    "optional_targets": [
+      "opencode"
+    ],
+    "memory_storage": "project",
+    "min_evidence": 5,
+    "scratch_min_evidence": 2,
+    "global_db_imported": false
+  },
+  "topology": {
+    "project_slot_a": 8787,
+    "global_recovery_manual_only": 8788,
+    "project_slot_b": 8789,
+    "diagnostic_ports": [
+      8790,
+      8791,
+      8792,
+      8793
+    ],
+    "automatic_global_fallback": false
+  }
+}
