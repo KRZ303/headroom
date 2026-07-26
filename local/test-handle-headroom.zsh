@@ -214,17 +214,20 @@ PY
 )
 
 (
-  export HOME="${TEST_ROOT}/compat-home"
+  export HOME="${TEST_ROOT}/profiles-home"
   export HEADROOM_SOURCE_DIR="$repo"
   source "$MANAGER" --help >/dev/null
-  patch_profile_manifest() { return 0 }
-  INSTALLER_PARITY=no
-  apply_installer_compatibility headroom-full yes no > "${TEST_ROOT}/compat.txt"
-  assert_contains "${TEST_ROOT}/compat.txt" \
-    "Compatibility patch applied because local Headroom lacks installer parity."
+  [[ "${PROFILE_PORT[headroom-full]}" == 8787 ]] || fail "slot A port drifted"
+  [[ "${PROFILE_PORT[headroom-full-b]}" == 8789 ]] || fail "slot B port drifted"
+  [[ "${PROFILE_PORT[headroom-full-global]}" == 8788 ]] || fail "recovery port drifted"
+  for profile in $DIAGNOSTIC_PROFILES; do
+    [[ "${PROFILE_PORT[$profile]}" != 8787 &&
+      "${PROFILE_PORT[$profile]}" != 8788 &&
+      "${PROFILE_PORT[$profile]}" != 8789 ]] ||
+      fail "diagnostic profile uses reserved port: ${profile}"
+  done
 
-  INSTALLER_PARITY=yes
-  SELECTED_APPS=(claude)
+  SELECTED_APPS=(claude codex)
   launchd_enable_profile() { return 0 }
   launchd_disable_profile() { return 0 }
   cleanup_failed_profile_start() { return 0 }
@@ -236,6 +239,18 @@ PY
   install_one_profile headroom-full >/dev/null
   assert_contains "${TEST_ROOT}/native-apply.txt" \
     "--memory --learn --memory-storage project"
+  assert_contains "${TEST_ROOT}/native-apply.txt" \
+    "--target claude --target codex"
+  if grep -F -- '--target opencode' "${TEST_ROOT}/native-apply.txt" >/dev/null; then
+    fail "optional OpenCode target installed by default"
+  fi
+  if grep -F -- '--min-evidence' "${TEST_ROOT}/native-apply.txt" >/dev/null; then
+    fail "manager overrode candidate/live min_evidence default"
+  fi
+  if typeset -f patch_profile_manifest >/dev/null ||
+    typeset -f apply_installer_compatibility >/dev/null; then
+    fail "obsolete manifest compatibility patch remains"
+  fi
 )
 
 (

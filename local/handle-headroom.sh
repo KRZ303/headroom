@@ -2,13 +2,14 @@
 # handle-headroom.sh
 # Interactive Headroom setup/profile/config manager for macOS + zsh.
 #
-# Manages six mutually exclusive persistent profiles:
-#   headroom-full                       project memory + learn + tool intercept
-#   headroom-full-global                global memory  + learn + tool intercept
-#   headroom-no-mem                     no memory              + tool intercept
-#   headroom-no-tool-intercept          project memory + learn + no intercept
-#   headroom-no-tool-intercept-global   global memory  + learn + no intercept
-#   headroom-lite                       no memory              + no intercept
+# Manages seven mutually exclusive persistent profiles:
+#   headroom-full                       project slot A, memory + learn + intercept
+#   headroom-full-b                     project slot B, memory + learn + intercept
+#   headroom-full-global                manual global recovery
+#   headroom-no-mem                     diagnostic: no memory + intercept
+#   headroom-no-tool-intercept          diagnostic: project memory, no intercept
+#   headroom-no-tool-intercept-global   diagnostic: global memory, no intercept
+#   headroom-lite                       diagnostic: no memory, no intercept
 #
 # Claude Code, Codex/ChatGPT Desktop, and OpenCode are the managed install targets.
 # No MCP servers are installed or modified.
@@ -21,7 +22,7 @@ setopt PIPE_FAIL
 unsetopt NOMATCH
 umask 077
 
-readonly SCRIPT_VERSION="1.3.1"
+readonly SCRIPT_VERSION="1.4.0"
 readonly STATE_ROOT="${HOME}/.handle-headroom"
 readonly BACKUP_ROOT="${STATE_ROOT}/backup"
 readonly SETS_ROOT="${BACKUP_ROOT}/_sets"
@@ -41,7 +42,14 @@ readonly STARTUP_READY_GRACE_SECONDS=180
 # another profile's healthy endpoint for its own process.
 typeset -ga MANAGED_PROFILES=(
   headroom-full
+  headroom-full-b
   headroom-full-global
+  headroom-no-mem
+  headroom-no-tool-intercept
+  headroom-no-tool-intercept-global
+  headroom-lite
+)
+typeset -ga DIAGNOSTIC_PROFILES=(
   headroom-no-mem
   headroom-no-tool-intercept
   headroom-no-tool-intercept-global
@@ -51,14 +59,16 @@ typeset -ga MANAGED_PROFILES=(
 typeset -gA PROFILE_PORT PROFILE_MEMORY PROFILE_GLOBAL PROFILE_INTERCEPT
 PROFILE_PORT=(
   headroom-full 8787
+  headroom-full-b 8789
   headroom-full-global 8788
-  headroom-no-mem 8789
-  headroom-no-tool-intercept 8790
-  headroom-no-tool-intercept-global 8791
-  headroom-lite 8792
+  headroom-no-mem 8790
+  headroom-no-tool-intercept 8791
+  headroom-no-tool-intercept-global 8792
+  headroom-lite 8793
 )
 PROFILE_MEMORY=(
   headroom-full yes
+  headroom-full-b yes
   headroom-full-global yes
   headroom-no-mem no
   headroom-no-tool-intercept yes
@@ -67,6 +77,7 @@ PROFILE_MEMORY=(
 )
 PROFILE_GLOBAL=(
   headroom-full no
+  headroom-full-b no
   headroom-full-global yes
   headroom-no-mem no
   headroom-no-tool-intercept no
@@ -75,6 +86,7 @@ PROFILE_GLOBAL=(
 )
 PROFILE_INTERCEPT=(
   headroom-full yes
+  headroom-full-b yes
   headroom-full-global yes
   headroom-no-mem yes
   headroom-no-tool-intercept no
@@ -87,7 +99,6 @@ typeset -ga CHANGED_APPS=()
 typeset -g CHOSEN_PROFILE=""
 typeset -g CHOSEN_BACKUP_SET=""
 typeset -g PYTHON_BIN=""
-typeset -g INSTALLER_PARITY="no"
 typeset -g SOURCE_DIR="" SOURCE_SHA="" SOURCE_BRANCH="" SOURCE_DIRTY=""
 
 if [[ -t 1 ]]; then
@@ -241,13 +252,14 @@ require_headroom_capabilities() {
   proxy_help="$(headroom proxy --help 2>&1)" || return 1
 
   for flag in --preset --runtime --scope --providers --target --profile --port \
-    --no-telemetry --env --memory --intercept-tool-results; do
+    --no-telemetry --env --memory --learn --memory-storage --min-evidence \
+    --memory-project-root --intercept-tool-results; do
     if [[ "$apply_help" != *"$flag"* ]]; then
       error "Ta wersja Headrooma nie obsługuje wymaganej flagi ${flag}."
       return 1
     fi
   done
-  if [[ "$apply_help" != *"opencode"* ]]; then
+  if (( ${SELECTED_APPS[(Ie)opencode]} )) && [[ "$apply_help" != *"opencode"* ]]; then
     error "Ta wersja Headrooma nie obsługuje targetu OpenCode."
     return 1
   fi
@@ -257,22 +269,19 @@ require_headroom_capabilities() {
       return 1
     fi
   done
-  if [[ "$apply_help" == *"--learn"* && "$apply_help" == *"--memory-storage"* ]]; then
-    INSTALLER_PARITY=yes
-  else
-    INSTALLER_PARITY=no
-  fi
   for flag in --learn --memory-storage; do
     if [[ "$proxy_help" != *"$flag"* ]]; then
       error "Ta wersja Headrooma nie obsługuje wymaganej flagi proxy ${flag}."
       return 1
     fi
   done
-  tool_python="$(headroom_tool_python)" || return 1
-  if ! "$tool_python" -c \
-    'from headroom.providers.opencode.config import _parse_json_loose, headroom_provider_entry'; then
-    error "Ta wersja Headrooma nie udostępnia wymaganych helperów OpenCode."
-    return 1
+  if (( ${SELECTED_APPS[(Ie)opencode]} )); then
+    tool_python="$(headroom_tool_python)" || return 1
+    if ! "$tool_python" -c \
+      'from headroom.providers.opencode.config import _parse_json_loose, headroom_provider_entry'; then
+      error "Ta wersja Headrooma nie udostępnia wymaganych helperów OpenCode."
+      return 1
+    fi
   fi
 }
 
@@ -1343,107 +1352,6 @@ warn_running_apps() {
   return 0
 }
 
-patch_profile_manifest() {
-  local profile="$1" memory="$2" global="$3"
-  local manifest="$(profile_manifest "$profile")"
-  local root="$(dirname "$manifest")"
-
-  PROFILE_PATCH_NAME="$profile" PROFILE_PATCH_MEMORY="$memory" PROFILE_PATCH_GLOBAL="$global" \
-    "$PYTHON_BIN" - "$manifest" <<'PY'
-import json
-import os
-import sys
-from pathlib import Path
-
-path = Path(sys.argv[1])
-manifest = json.loads(path.read_text(encoding="utf-8"))
-memory = os.environ["PROFILE_PATCH_MEMORY"] == "yes"
-global_mode = os.environ["PROFILE_PATCH_GLOBAL"] == "yes"
-expected_profile = os.environ["PROFILE_PATCH_NAME"]
-
-if not isinstance(manifest, dict):
-    raise SystemExit(f"{path} nie zawiera obiektu JSON")
-if manifest.get("profile") != expected_profile:
-    raise SystemExit(
-        f"Nieoczekiwany profil w {path}: {manifest.get('profile')!r}, oczekiwano {expected_profile!r}"
-    )
-base_env = manifest.get("base_env")
-if not isinstance(base_env, dict):
-    raise SystemExit(f"Nieznany schemat {path}: base_env nie jest obiektem")
-args = manifest.get("proxy_args")
-if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
-    raise SystemExit(f"Nieznany schemat {path}: proxy_args nie jest listą stringów")
-memory_db_path = manifest.get("memory_db_path")
-if memory and not isinstance(memory_db_path, str):
-    raise SystemExit(f"Nieznany schemat {path}: memory_db_path nie jest stringiem")
-manifest["memory_enabled"] = memory
-
-# Work around install/apply forcing token mode. Savings Profile/settings.json
-# should decide cache/token instead.
-base_env.pop("HEADROOM_MODE", None)
-
-args = list(args)
-cleaned = []
-i = 0
-while i < len(args):
-    arg = args[i]
-    if arg in {"--mode", "--memory-db-path", "--memory-storage"}:
-        if i + 1 >= len(args):
-            raise SystemExit(f"Nieznany schemat {path}: {arg} bez wartości")
-        i += 2
-        continue
-    if arg in {"--learn", "--no-learn", "--memory"}:
-        i += 1
-        continue
-    cleaned.append(arg)
-    i += 1
-
-if memory:
-    base_env["HEADROOM_MEMORY_ENABLED"] = "1"
-    cleaned.extend(["--memory", "--memory-db-path", memory_db_path, "--learn"])
-    if global_mode:
-        cleaned.extend(["--memory-storage", "global"])
-else:
-    base_env.pop("HEADROOM_MEMORY_ENABLED", None)
-
-manifest["proxy_args"] = cleaned
-payload = json.dumps(manifest, indent=2) + "\n"
-tmp = path.with_name(path.name + ".tmp")
-tmp.write_text(payload, encoding="utf-8")
-os.chmod(tmp, path.stat().st_mode & 0o777)
-os.replace(tmp, path)
-print(" ".join(cleaned))
-PY
-  (( $? == 0 )) || return 1
-
-  # Runner scripts contain a generated copy of base_env. Remove only the forced
-  # HEADROOM_MODE export; keep MPS/backend/port and every other shared setting.
-  local script
-  for script in "${root}/run-headroom.sh" "${root}/ensure-headroom.sh"; do
-    if [[ ! -f "$script" ]]; then
-      error "Brak oczekiwanego runnera: ${script}"
-      return 1
-    fi
-    "$PYTHON_BIN" - "$script" <<'PY'
-import sys
-from pathlib import Path
-p = Path(sys.argv[1])
-lines = p.read_text(encoding="utf-8").splitlines()
-lines = [line for line in lines if not line.startswith("export HEADROOM_MODE=")]
-p.write_text("\n".join(lines) + "\n", encoding="utf-8")
-PY
-    (( $? == 0 )) || return 1
-    chmod 700 "$script" || return 1
-  done
-}
-
-apply_installer_compatibility() {
-  local profile="$1" memory="$2" global="$3"
-  [[ "$INSTALLER_PARITY" == yes ]] && return 0
-  patch_profile_manifest "$profile" "$memory" "$global" || return 1
-  warn "Compatibility patch applied because local Headroom lacks installer parity."
-}
-
 configure_shared_settings() {
   mkdir -p "$(dirname "$HEADROOM_SETTINGS_FILE")" || return 1
   "$PYTHON_BIN" - "$HEADROOM_SETTINGS_FILE" <<'PY'
@@ -1567,7 +1475,7 @@ install_one_profile() {
     cmd+=(--target "$app")
   done
   [[ "$intercept" == "yes" ]] && cmd+=(--intercept-tool-results)
-  if [[ "$INSTALLER_PARITY" == yes && "$memory" == yes ]]; then
+  if [[ "$memory" == yes ]]; then
     cmd+=(--memory --learn --memory-storage)
     [[ "$global" == yes ]] && cmd+=(global) || cmd+=(project)
   fi
@@ -1583,7 +1491,7 @@ install_one_profile() {
     return 1
   fi
 
-  # Stop before patching. No client should use the just-created unpatched profile.
+  # Leave every newly installed profile inactive until an explicit switch.
   if ! headroom install stop --profile "$profile" >/dev/null 2>&1; then
     error "Nie udało się zatrzymać świeżo utworzonego profilu ${profile}."
     cleanup_failed_profile_start "$profile" || error "Cleanup ${profile} nie zakończył się w pełni."
@@ -1591,7 +1499,6 @@ install_one_profile() {
   fi
   launchd_disable_profile "$profile" || return 1
 
-  apply_installer_compatibility "$profile" "$memory" "$global" || return 1
   success "Profil ${profile} zainstalowany i pozostawiony wyłączony."
 }
 
@@ -1601,20 +1508,22 @@ choose_profile() {
   CHOSEN_PROFILE=""
   print
   print -P "%B${prompt}%b"
-  print "  1) headroom-full                       project memory + learn + intercept"
-  print "  2) headroom-full-global                global memory  + learn + intercept"
-  print "  3) headroom-no-mem                     no memory              + intercept"
-  print "  4) headroom-no-tool-intercept          project memory + learn + no intercept"
-  print "  5) headroom-no-tool-intercept-global   global memory  + learn + no intercept"
-  print "  6) headroom-lite                       no memory              + no intercept"
+  print "  1) headroom-full                       project slot A (8787)"
+  print "  2) headroom-full-b                     project slot B (8789)"
+  print "  3) headroom-full-global                manual global recovery (8788)"
+  print "  4) headroom-no-mem                     diagnostic"
+  print "  5) headroom-no-tool-intercept          diagnostic"
+  print "  6) headroom-no-tool-intercept-global   diagnostic"
+  print "  7) headroom-lite                       diagnostic"
   read -r "answer?Wybór: "
   case "$answer" in
     1|headroom-full|full) CHOSEN_PROFILE="headroom-full" ;;
-    2|headroom-full-global|full-global) CHOSEN_PROFILE="headroom-full-global" ;;
-    3|headroom-no-mem|no-mem) CHOSEN_PROFILE="headroom-no-mem" ;;
-    4|headroom-no-tool-intercept|no-tool-intercept|no-intercept) CHOSEN_PROFILE="headroom-no-tool-intercept" ;;
-    5|headroom-no-tool-intercept-global|no-tool-intercept-global|no-intercept-global) CHOSEN_PROFILE="headroom-no-tool-intercept-global" ;;
-    6|headroom-lite|lite) CHOSEN_PROFILE="headroom-lite" ;;
+    2|headroom-full-b|full-b) CHOSEN_PROFILE="headroom-full-b" ;;
+    3|headroom-full-global|full-global) CHOSEN_PROFILE="headroom-full-global" ;;
+    4|headroom-no-mem|no-mem) CHOSEN_PROFILE="headroom-no-mem" ;;
+    5|headroom-no-tool-intercept|no-tool-intercept|no-intercept) CHOSEN_PROFILE="headroom-no-tool-intercept" ;;
+    6|headroom-no-tool-intercept-global|no-tool-intercept-global|no-intercept-global) CHOSEN_PROFILE="headroom-no-tool-intercept-global" ;;
+    7|headroom-lite|lite) CHOSEN_PROFILE="headroom-lite" ;;
     *) return 1 ;;
   esac
 }
@@ -1622,7 +1531,9 @@ choose_profile() {
 switch_to_profile() {
   local target="$1"
   require_headroom || return 1
-  persist_opencode_config_path || return 1
+  if (( ${SELECTED_APPS[(Ie)opencode]} )); then
+    persist_opencode_config_path || return 1
+  fi
   profile_installed "$target" || {
     error "Profil ${target} nie jest zainstalowany."
     return 1
@@ -1636,7 +1547,8 @@ switch_to_profile() {
     cleanup_failed_profile_start "$target" || error "Cleanup ${target} nie zakończył się w pełni."
     return 1
   fi
-  if ! configure_opencode_provider_models "${PROFILE_PORT[$target]}"; then
+  if (( ${SELECTED_APPS[(Ie)opencode]} )) &&
+    ! configure_opencode_provider_models "${PROFILE_PORT[$target]}"; then
     error "Nie udało się uzupełnić modeli providera OpenCode; wycofuję start ${target}."
     cleanup_failed_profile_start "$target" || error "Cleanup ${target} nie zakończył się w pełni."
     return 1
@@ -1669,9 +1581,11 @@ install_setup() {
   prepare_headroom_source || return
   ensure_uv_python || return
   warn_running_apps || return
-  persist_opencode_config_path || return
-
-  SELECTED_APPS=(claude codex opencode)
+  SELECTED_APPS=(claude codex)
+  if confirm "Dodać opcjonalny target OpenCode?" no; then
+    SELECTED_APPS+=(opencode)
+    persist_opencode_config_path || return
+  fi
   save_managed_apps || return
 
   local profile backup_purpose="pre-install"
@@ -1689,7 +1603,9 @@ install_setup() {
   else
     warn "Bez backupu automatyczne porównanie i przywracanie po uninstall będzie ograniczone."
   fi
-  ensure_opencode_config_exists || return
+  if (( ${SELECTED_APPS[(Ie)opencode]} )); then
+    ensure_opencode_config_exists || return
+  fi
 
   install_package_with_uv || return
   require_headroom || return
@@ -1702,6 +1618,10 @@ install_setup() {
 
   for profile in $MANAGED_PROFILES; do
     install_one_profile "$profile" || {
+      if (( ${DIAGNOSTIC_PROFILES[(Ie)$profile]} )); then
+        warn "Diagnostyczny profil ${profile} nie został zainstalowany; kontynuuję."
+        continue
+      fi
       error "Instalacja przerwana na profilu ${profile}. Sprawdź log: ${RUN_LOG}"
       return
     }
@@ -1719,7 +1639,8 @@ install_setup() {
   fi
   switch_to_profile "$target" || return
 
-  warn "OpenCode: wybierz model headroom/...; provider jest gotowy, ale skrypt nie zmienia Twojego modelu domyślnego."
+  (( ${SELECTED_APPS[(Ie)opencode]} )) &&
+    warn "OpenCode: wybierz model headroom/...; skrypt nie zmienia modelu domyślnego."
   success "Cały setup został zainstalowany."
   print "Log: ${RUN_LOG}"
   pause
