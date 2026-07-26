@@ -405,7 +405,9 @@ def test_http_resolution_does_not_mutate_body_or_forward_internal_metadata(
             self.retry_kwargs = kwargs
             return _ResponseStub()
 
-        async def _observe_openai_responses_traffic(self, request_body, *, request_id):
+        async def _observe_openai_responses_traffic(
+            self, request_body, *, request_id, request_context=None
+        ):
             self.observed.append(request_body)
 
         async def _record_request_outcome(self, _outcome):
