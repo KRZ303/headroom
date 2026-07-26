@@ -157,6 +157,30 @@ class TestClaudeCodeWriter:
         # Only one Environment section in the final block
         assert content.count("### Environment") == 1
 
+    def test_opt_in_same_section_merge_preserves_prior_pattern_items(self, tmp_path):
+        context_file = tmp_path / "AGENTS.md"
+        context_file.write_text(
+            "<!-- headroom:learn:start -->\n"
+            "## Headroom Learned Patterns\n\n"
+            "### Learned: preference\n"
+            "- Keep the established queue <!-- headroom:pattern-id:queue -->\n"
+            "- Keep local reviews\n\n"
+            "<!-- headroom:learn:end -->\n"
+        )
+        recommendation = _rec(
+            RecommendationTarget.CONTEXT_FILE,
+            "Learned: preference",
+            "- Use the updated queue <!-- headroom:pattern-id:queue -->\n"
+            "- Keep local reviews <!-- headroom:pattern-id:reviews -->",
+        )
+        recommendation.preserve_prior_items = True
+
+        final = _merge_into_file(context_file, [recommendation])
+
+        assert "Use the updated queue" in final
+        assert "Keep the established queue" not in final
+        assert final.count("Keep local reviews") == 1
+
     def test_replacing_existing_block_handles_literal_backslash_escapes(self, tmp_path):
         """LLM text with backslash escapes must not be interpreted as a regex replacement."""
         proj = _project(tmp_path)

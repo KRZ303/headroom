@@ -163,6 +163,29 @@ class MemoryConfig:
     bridge_export_path: str = ""
 
 
+@dataclass(frozen=True)
+class ResolvedMemoryTarget:
+    """Immutable storage and native-output target for one request."""
+
+    backend: Any = field(compare=False, hash=False, repr=False)
+    scope: ResolvedScope
+    user_id: str
+    project_root: Path | None
+    agent: str
+    provider: str
+
+    @property
+    def identity(self) -> tuple[str, str, str, str, str]:
+        scope_key = self.scope.project_key or str(self.scope.db_path or "")
+        return (
+            self.scope.mode.value,
+            scope_key,
+            self.user_id,
+            self.agent,
+            self.provider,
+        )
+
+
 class MemoryHandler:
     """Unified handler for memory operations in the proxy.
 
@@ -659,6 +682,33 @@ class MemoryHandler:
             scope.mode is MemoryStorageMode.PROJECT
             and scope.project_key is None
             and scope.db_path is None
+        )
+
+    def resolve_target(
+        self,
+        base_user_id: str,
+        request_context: RequestContext | None,
+        *,
+        agent: str,
+        provider: str,
+    ) -> ResolvedMemoryTarget | None:
+        """Resolve every learning destination once at request entry."""
+        backend, scope, effective_user = self._resolve_for_request(base_user_id, request_context)
+        if backend is None or scope is None:
+            return None
+        if (
+            scope.mode is MemoryStorageMode.PROJECT
+            and scope.project_key is None
+            and scope.db_path is None
+        ):
+            return None
+        return ResolvedMemoryTarget(
+            backend=backend,
+            scope=scope,
+            user_id=effective_user,
+            project_root=scope.project_root,
+            agent=agent or "unknown",
+            provider=provider or "unknown",
         )
 
     @staticmethod
