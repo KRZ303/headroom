@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+import asyncio
+from types import SimpleNamespace
 from typing import Any
 
 import httpx
 from fastapi.testclient import TestClient
 
 from headroom.memory.traffic_learner import TrafficLearner
-from headroom.proxy.handlers.openai import _responses_input_to_learner_messages
+from headroom.proxy.handlers.openai import (
+    OpenAIHandlerMixin,
+    _responses_input_to_learner_messages,
+)
 from headroom.proxy.server import ProxyConfig, create_app
 
 
@@ -82,6 +87,30 @@ def test_responses_input_normalizes_messages_and_tool_results() -> None:
             "is_error": True,
         }
     ]
+
+
+def test_unresolved_project_skips_openai_learner_entry_points() -> None:
+    learner = _RecordingLearner()
+    memory_handler = SimpleNamespace(is_project_unresolved=lambda _ctx: True)
+    proxy = SimpleNamespace(traffic_learner=learner, memory_handler=memory_handler)
+
+    async def run() -> None:
+        await OpenAIHandlerMixin._observe_openai_responses_traffic(
+            proxy,
+            {"input": _responses_input()},
+            request_id="responses-unresolved",
+            request_context=object(),
+        )
+        await OpenAIHandlerMixin._observe_openai_chat_traffic(
+            proxy,
+            [{"role": "user", "content": "remember this"}],
+            request_id="chat-unresolved",
+            request_context=object(),
+        )
+
+    asyncio.run(run())
+    assert learner.message_batches == []
+    assert learner.tool_results == []
 
 
 def test_responses_http_request_reaches_traffic_learner() -> None:
