@@ -785,57 +785,101 @@ def _responses_input_to_learner_messages(
         if not isinstance(item, dict):
             continue
         item_type = item.get("type")
-        if item_type == "function_call":
-            arguments = item.get("arguments", {})
-            if isinstance(arguments, str):
-                try:
-                    parsed_arguments = json.loads(arguments)
-                except (json.JSONDecodeError, TypeError):
-                    parsed_arguments = {}
-                arguments = parsed_arguments if isinstance(parsed_arguments, dict) else {}
-            if not isinstance(arguments, dict):
-                arguments = {}
-            messages.append(
-                {
-                    "role": "assistant",
-                    "content": [
-                        {
-                            "type": "tool_use",
-                            "id": item.get("call_id", ""),
-                            "name": item.get("name", "unknown"),
-                            "input": arguments,
-                        }
-                    ],
-                }
-            )
-            continue
-        if item_type in _RESPONSES_OUTPUT_ITEM_TYPES:
-            output = item.get("output", "")
-            output_text = _responses_part_text(output)
-            if not output_text and output not in (None, ""):
-                output_text = json.dumps(output, ensure_ascii=False, default=str)
-            messages.append(
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": item.get("call_id", ""),
-                            "content": output_text,
-                            "is_error": bool(item.get("is_error"))
-                            or item.get("status") in {"failed", "error", "incomplete"},
-                        }
-                    ],
-                }
-            )
+        if item_type == "function_call" or item_type in _RESPONSES_OUTPUT_ITEM_TYPES:
             continue
         text = _responses_part_text(item.get("content"))
         if text:
             role = item.get("role")
             messages.append(
-                {"role": role if isinstance(role, str) and role else "user", "content": text}
+                {"role": role if isinstance(role, str) and role else "unknown", "content": text}
             )
+    for result in _openai_responses_tool_results_for_learning(input_data):
+        messages.extend(
+            [
+                {
+                    "role": "assistant",
+                    "content": [
+                        {
+                            "type": "tool_use",
+                            "id": result["call_id"],
+                            "name": result["tool_name"],
+                            "input": result["input"],
+                        }
+                    ],
+                },
+                {
+                    "role": "user",
+                    "content": [
+                        {
+                            "type": "tool_result",
+                            "tool_use_id": result["call_id"],
+                            "content": result["output"],
+                            "is_error": result["is_error"],
+                        }
+                    ],
+                },
+            ]
+        )
     return messages
+
+
+def _responses_function_args(arguments: Any) -> dict[str, Any]:
+    if isinstance(arguments, dict):
+        return arguments
+    if not isinstance(arguments, str) or not arguments.strip():
+        return {}
+    try:
+        parsed = json.loads(arguments)
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _openai_responses_tool_results_for_learning(input_data: Any) -> list[dict[str, Any]]:
+    """Return only paired function/custom tool calls and outputs."""
+    if not isinstance(input_data, list):
+        return []
+    calls_by_id: dict[str, dict[str, Any]] = {}
+    for item in input_data:
+        if not isinstance(item, dict):
+            continue
+        item_type = item.get("type")
+        if item_type != "function_call" and (
+            not isinstance(item_type, str)
+            or f"{item_type}_output" not in _RESPONSES_OUTPUT_ITEM_TYPES
+        ):
+            continue
+        call_id = item.get("call_id") or item.get("id")
+        if not isinstance(call_id, str) or not call_id:
+            continue
+        name = item.get("name")
+        arguments = item.get("arguments") if item_type == "function_call" else item.get("input")
+        calls_by_id[call_id] = {
+            "tool_name": name if isinstance(name, str) and name else "unknown",
+            "input": _responses_function_args(arguments),
+        }
+
+    results: list[dict[str, Any]] = []
+    for item in input_data:
+        if not isinstance(item, dict) or item.get("type") not in _RESPONSES_OUTPUT_ITEM_TYPES:
+            continue
+        call_id = item.get("call_id")
+        if not isinstance(call_id, str) or call_id not in calls_by_id:
+            continue
+        output = _responses_part_text(item.get("output"))
+        if not output and item.get("output") is not None:
+            output = json.dumps(item.get("output"), ensure_ascii=False, default=str)
+        call = calls_by_id[call_id]
+        results.append(
+            {
+                **call,
+                "call_id": call_id,
+                "output": output,
+                "is_error": bool(item.get("is_error"))
+                or item.get("status") in {"failed", "error", "incomplete"},
+            }
+        )
+    return results
 
 
 def _has_headroom_retrieve_tool_responses(tools: Any) -> bool:
@@ -1367,16 +1411,21 @@ class OpenAIHandlerMixin:
             return
         try:
             memory_handler = getattr(self, "memory_handler", None)
-            if memory_handler and memory_handler.is_project_unresolved(request_context):
+            target = (
+                memory_handler.resolve_target(
+                    request_context.base_user_id,
+                    request_context,
+                    agent=classify_client(request_context.headers, default="unknown") or "unknown",
+                    provider="openai",
+                )
+                if memory_handler
+                and request_context is not None
+                and hasattr(memory_handler, "resolve_target")
+                else None
+            )
+            if target is None:
                 logger.info("[%s] Traffic learner skipped: project_unresolved", request_id)
                 return
-            if (
-                traffic_learner._backend is None
-                and memory_handler
-                and memory_handler.initialized
-                and memory_handler.backend
-            ):
-                traffic_learner.set_backend(memory_handler.backend)
 
             learner_messages = _responses_input_to_learner_messages(
                 body.get("instructions"),
@@ -1389,8 +1438,14 @@ class OpenAIHandlerMixin:
                     tool_input=tool_result["input"],
                     tool_output=tool_result["output"],
                     is_error=tool_result["is_error"],
+                    agent_type=target.agent,
+                    target=target,
                 )
-            await traffic_learner.on_messages(learner_messages)
+            await traffic_learner.on_messages(
+                learner_messages,
+                agent_type=target.agent,
+                target=target,
+            )
         except Exception as exc:
             logger.debug("[%s] Traffic learner (responses): %s", request_id, exc)
 
@@ -1416,16 +1471,21 @@ class OpenAIHandlerMixin:
             return
         try:
             memory_handler = getattr(self, "memory_handler", None)
-            if memory_handler and memory_handler.is_project_unresolved(request_context):
+            target = (
+                memory_handler.resolve_target(
+                    request_context.base_user_id,
+                    request_context,
+                    agent=classify_client(request_context.headers, default="unknown") or "unknown",
+                    provider="openai",
+                )
+                if memory_handler
+                and request_context is not None
+                and hasattr(memory_handler, "resolve_target")
+                else None
+            )
+            if target is None:
                 logger.info("[%s] Traffic learner skipped: project_unresolved", request_id)
                 return
-            if (
-                traffic_learner._backend is None
-                and memory_handler
-                and memory_handler.initialized
-                and memory_handler.backend
-            ):
-                traffic_learner.set_backend(memory_handler.backend)
 
             tool_results = traffic_learner.extract_tool_results_from_openai_messages(messages)
             for tool_result in tool_results[-5:]:
@@ -1434,10 +1494,69 @@ class OpenAIHandlerMixin:
                     tool_input=tool_result["input"],
                     tool_output=tool_result["output"],
                     is_error=tool_result["is_error"],
+                    agent_type=target.agent,
+                    target=target,
                 )
-            await traffic_learner.on_messages(messages)
+            await traffic_learner.on_messages(
+                messages,
+                agent_type=target.agent,
+                target=target,
+            )
         except Exception as exc:
             logger.debug("[%s] Traffic learner (chat): %s", request_id, exc)
+
+    async def _observe_openai_ws_response_create(
+        self,
+        inner_payload: dict[str, Any],
+        *,
+        seen_call_ids: dict[tuple[str, str, str, str, str], set[str]],
+        baseline: bool,
+        request_id: str,
+        request_context: Any,
+    ) -> None:
+        """Learn only newly appended WS tool results for the resolved target."""
+        traffic_learner = getattr(self, "traffic_learner", None)
+        memory_handler = getattr(self, "memory_handler", None)
+        if traffic_learner is None or memory_handler is None or request_context is None:
+            return
+        try:
+            target = memory_handler.resolve_target(
+                request_context.base_user_id,
+                request_context,
+                agent=classify_client(request_context.headers, default="codex") or "codex",
+                provider="openai",
+            )
+            if target is None:
+                return
+            target_seen = seen_call_ids.setdefault(target.identity, set())
+            learner_messages = _responses_input_to_learner_messages(
+                inner_payload.get("instructions"),
+                inner_payload.get("input", ""),
+            )
+            for tool_result in traffic_learner.extract_tool_results_from_messages(learner_messages):
+                call_id = tool_result.get("call_id") or ""
+                if call_id:
+                    if call_id in target_seen:
+                        continue
+                    target_seen.add(call_id)
+                if baseline:
+                    continue
+                await traffic_learner.on_tool_result(
+                    tool_name=tool_result["tool_name"],
+                    tool_input=tool_result["input"],
+                    tool_output=tool_result["output"],
+                    is_error=tool_result["is_error"],
+                    agent_type=target.agent,
+                    target=target,
+                )
+            if not baseline:
+                await traffic_learner.on_messages(
+                    learner_messages,
+                    agent_type=target.agent,
+                    target=target,
+                )
+        except Exception as exc:
+            logger.debug("[%s] Traffic learner (ws): %s", request_id, exc)
 
     @staticmethod
     def _headroom_bypass_enabled(headers: Any) -> bool:
@@ -6236,6 +6355,7 @@ class OpenAIHandlerMixin:
             ws_recorded_tokens_saved_total = 0
             ws_recorded_attempted_input_tokens_total = 0
             ws_response_create_frames = 1
+            ws_learner_seen_call_ids: dict[tuple[str, str, str, str, str], set[str]] = {}
             ws_client_frames_total = 1
             ws_upstream_frames_total = 0
             ws_cancel_frames = 0
@@ -6413,6 +6533,23 @@ class OpenAIHandlerMixin:
                     if self.memory_handler and ws_turn_project_features_allowed
                     else None
                 )
+                memory_user_id = None
+                memory_request_ctx = None
+                ws_response_body = frame_body.get("response", frame_body)
+                if not isinstance(ws_response_body, dict):
+                    return frame_raw
+                if memory_user_id_candidate is not None:
+                    from headroom.memory.storage_router import (
+                        RequestContext as _MemRequestContext,
+                    )
+
+                    memory_user_id = memory_user_id_candidate
+                    memory_request_ctx = _MemRequestContext(
+                        headers=dict(ws_headers),
+                        system_prompt=str(ws_response_body.get("instructions") or ""),
+                        base_user_id=memory_user_id,
+                        project_root_override=resolved_project_root_override,
+                    )
                 memory_decision = MemoryDecision.decide(
                     headers=ws_headers,
                     memory_handler=(
@@ -6427,26 +6564,7 @@ class OpenAIHandlerMixin:
                 if not memory_decision.inject:
                     return frame_raw
 
-                memory_user_id = memory_user_id_candidate
                 try:
-                    # Unwrap response.create envelope to access the response body
-                    ws_response_body = frame_body.get("response", frame_body)
-
-                    # Per-project memory routing (GH #462). For WS,
-                    # ``ws_response_body`` carries ``instructions`` —
-                    # that's the system-prompt-equivalent we feed to the
-                    # resolver.
-                    from headroom.memory.storage_router import (
-                        RequestContext as _MemRequestContext,
-                    )
-
-                    memory_request_ctx = _MemRequestContext(
-                        headers=dict(ws_headers),
-                        system_prompt=str(ws_response_body.get("instructions") or ""),
-                        base_user_id=memory_user_id,
-                        project_root_override=resolved_project_root_override,
-                    )
-
                     # Debug: log what Codex sends so we can see the full tool list
                     existing_tool_names = [
                         t.get("name") or t.get("function", {}).get("name", "?")
@@ -6614,6 +6732,14 @@ class OpenAIHandlerMixin:
                 body.get("type") == "response.create" or ("type" not in body and "input" in body)
             ):
                 first_msg_raw = await _prepare_memory_frame(body, first_msg_raw)
+                first_inner = body["response"] if isinstance(body.get("response"), dict) else body
+                await self._observe_openai_ws_response_create(
+                    first_inner,
+                    seen_call_ids=ws_learner_seen_call_ids,
+                    baseline=True,
+                    request_id=request_id,
+                    request_context=memory_request_ctx,
+                )
 
             # Hot-fix follow-up to PR #406 — inline Rust compression on the
             # WS first frame before forwarding upstream. PR #406 enabled
@@ -7248,6 +7374,18 @@ class OpenAIHandlerMixin:
                                 ):
                                     ws_response_create_frames += 1
                                     msg = await _prepare_memory_frame(_inbound_frame_body, msg)
+                                    inbound_inner = (
+                                        _inbound_frame_body["response"]
+                                        if isinstance(_inbound_frame_body.get("response"), dict)
+                                        else _inbound_frame_body
+                                    )
+                                    await self._observe_openai_ws_response_create(
+                                        inbound_inner,
+                                        seen_call_ids=ws_learner_seen_call_ids,
+                                        baseline=False,
+                                        request_id=request_id,
+                                        request_context=memory_request_ctx,
+                                    )
                                 (
                                     msg,
                                     _frame_modified,

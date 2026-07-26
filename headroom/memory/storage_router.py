@@ -93,6 +93,7 @@ class ResolvedScope:
     db_path: Path | None
     display_name: str  # human-readable label, e.g. project basename
     project_key: str | None  # stable hash, None for USER/GLOBAL
+    project_root: Path | None = None  # canonical cwd, never inferred from project-id
 
 
 @dataclass
@@ -183,6 +184,23 @@ class ProjectResolver:
                 return ident
 
         return None
+
+    def project_root(self, ctx: RequestContext) -> Path | None:
+        """Return the canonical cwd selected by the same tier order as ``resolve``."""
+        explicit = self._first_nonempty_header(ctx.headers, "x-headroom-project-id")
+        if explicit and self._sanitize_basename(explicit):
+            return None
+        cwd = (
+            self._first_nonempty_header(ctx.headers, "x-headroom-cwd")
+            or ctx.project_root_override
+            or self._extract_cwd_from_system_prompt(ctx.system_prompt)
+        )
+        if not cwd:
+            return None
+        try:
+            return Path(os.path.realpath(cwd.strip()))
+        except (OSError, ValueError):
+            return Path(cwd.strip())
 
     @staticmethod
     def _first_nonempty_header(headers: Mapping[str, str], name: str) -> str | None:
@@ -365,6 +383,7 @@ class BackendRouter:
             db_path=db_path,
             display_name=display_name,
             project_key=project_key,
+            project_root=self._resolver.project_root(ctx),
         )
 
     def _get_or_create_backend(self, db_path: Path) -> LocalBackend:
