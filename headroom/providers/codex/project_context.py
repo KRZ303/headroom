@@ -10,7 +10,7 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 try:
     import tomllib
@@ -62,7 +62,7 @@ class CodexProjectContextResolver:
     ) -> CodexResolvedProject:
         explicit_project_id = self._header(headers, "x-headroom-project-id")
         if explicit_project_id:
-            identity = ProjectResolver().resolve(
+            project_identity = ProjectResolver().resolve(
                 RequestContext(
                     headers=headers,
                     system_prompt="",
@@ -72,7 +72,7 @@ class CodexProjectContextResolver:
             )
             return CodexResolvedProject(
                 cwd=None,
-                project_key=identity[0] if identity else None,
+                project_key=project_identity[0] if project_identity else None,
                 source="x-headroom-project-id",
                 reason="explicit_project_id",
             )
@@ -106,7 +106,12 @@ class CodexProjectContextResolver:
                 )
             cwd, reason = self._cwd_from_state(thread_id, turn_id)
             if cwd is not None:
-                return self._cwd_result(cwd, headers, source, pinned_cwd)
+                return self._cwd_result(
+                    cwd,
+                    headers,
+                    cast(Literal["codex-turn-metadata", "codex-client-metadata"], source),
+                    pinned_cwd,
+                )
             return self._skip(reason)
 
         return self._fallback_or_skip(
