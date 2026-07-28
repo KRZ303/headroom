@@ -114,7 +114,13 @@ def test_responses_input_does_not_promote_unknown_role_to_user() -> None:
 
 def test_unresolved_project_skips_openai_learner_entry_points() -> None:
     learner = _RecordingLearner()
-    memory_handler = SimpleNamespace(is_project_unresolved=lambda _ctx: True)
+    backend_bindings: list[object] = []
+    setattr(learner, "set_backend", backend_bindings.append)
+    memory_handler = SimpleNamespace(
+        is_project_unresolved=lambda _ctx: True,
+        initialized=True,
+        backend=object(),
+    )
     proxy = SimpleNamespace(traffic_learner=learner, memory_handler=memory_handler)
 
     async def run() -> None:
@@ -130,8 +136,27 @@ def test_unresolved_project_skips_openai_learner_entry_points() -> None:
             request_id="chat-unresolved",
             request_context=object(),
         )
+        seen_call_ids: set[str] = set()
+        await OpenAIHandlerMixin._observe_openai_ws_response_create(
+            proxy,
+            _ws_frame(["baseline"]),
+            seen_call_ids=seen_call_ids,
+            baseline=True,
+            request_id="ws-baseline-unresolved",
+            request_context=object(),
+        )
+        await OpenAIHandlerMixin._observe_openai_ws_response_create(
+            proxy,
+            _ws_frame(["later"]),
+            seen_call_ids=seen_call_ids,
+            baseline=False,
+            request_id="ws-later-unresolved",
+            request_context=object(),
+        )
+        assert seen_call_ids == set()
 
     asyncio.run(run())
+    assert backend_bindings == []
     assert learner.message_batches == []
     assert learner.tool_results == []
 

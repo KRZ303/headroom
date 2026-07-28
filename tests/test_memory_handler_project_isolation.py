@@ -442,7 +442,7 @@ def test_resolved_native_create_uses_project_backend(tmp_path: Path) -> None:
     writers = [backend for backend in _FakeBackend.instances if backend.saved_contents]
     assert len(writers) == 1
     assert writers[0].saved_contents == ["PROJECT_NATIVE_CANARY"]
-    assert "/projects/" in writers[0].db_path
+    assert "projects" in Path(writers[0].db_path).parts
 
 
 def test_unresolved_native_create_has_no_backend_side_effect(tmp_path: Path) -> None:
