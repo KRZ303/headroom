@@ -181,7 +181,7 @@ def _start_deployment(manifest: DeploymentManifest, *, assume_start_lock: bool =
             f"({' '.join(map(str, e.cmd)) if isinstance(e.cmd, list | tuple) else e.cmd})"
         ) from None
 
-    if not wait_ready(manifest, timeout_seconds=45):
+    if not wait_ready(manifest, timeout_seconds=240):
         raise click.ClickException(
             f"Deployment '{manifest.profile}' did not become ready after start."
         )
