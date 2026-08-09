@@ -1,0 +1,296 @@
+{
+  "schema_version": 2,
+  "generated_at_utc": "2026-08-09T21:39:47Z",
+  "scope": "source-only",
+  "integration": {
+    "branch": "krz/local-integration-refresh-20260809",
+    "upstream_base": "675d13f08d42455c8fa17bda878c1a11b905cee4",
+    "current_upstream_head": "675d13f08d42455c8fa17bda878c1a11b905cee4",
+    "assembled_head_before_lock": "6d3c9bf8d44695128903c2200b116774a0129ae2",
+    "package_version": "0.34.0",
+    "uv_lock_blob": "b80d4d91ffee5f5879dd0f27aa16b0a06d163312",
+    "runtime_verified": false,
+    "live_deployed": false,
+    "install_performed": false,
+    "candidate_started": false
+  },
+  "candidate_commits": [
+    "63e7b78c5fb867162d5c94ea2081f0526003594d",
+    "23d833ff4b6d94ca9c916404212fa88a366254d1",
+    "bf31b74f26d0a46ef4d44c5a12202c1efa6b6b1f",
+    "615a05c0b34e082a7e4006fa2b695d410a8cfcd3",
+    "df75ab7793ca05e603825534a9350c431260f13a",
+    "6890b994c1f2ee53746761613c7341b288e9fcc6",
+    "2779627fa42150487347a677be67bd9ee9ab2cd2",
+    "43f27fad71a1ae9c22d7621757b8dc716072db79",
+    "6d3c9bf8d44695128903c2200b116774a0129ae2"
+  ],
+  "topics": [
+    {
+      "name": "pr_2636_codex_project_context",
+      "source_ref": "upstream/pull/2636/head",
+      "origin_ref": "origin/krz/codex-desktop-project-context",
+      "source_base": "675d13f08d42455c8fa17bda878c1a11b905cee4",
+      "source_head": "af405f7c96de8bf21b789d82a5b1626abd4cb944",
+      "current_remote_head": "af405f7c96de8bf21b789d82a5b1626abd4cb944",
+      "source_patch_id": "c7704bfbc7dcc7c9ff5f1886e305d9ea0b5b6648",
+      "integration_commit": "63e7b78c5fb867162d5c94ea2081f0526003594d",
+      "integration_patch_id": "c7704bfbc7dcc7c9ff5f1886e305d9ea0b5b6648",
+      "coverage": "exact net patch; later topics intentionally extend shared handlers and tests",
+      "paths": [
+        "headroom/providers/codex/project_context.py",
+        "headroom/proxy/handlers/openai.py",
+        "tests/test_codex_project_context.py",
+        "tests/test_codex_ws_per_frame_memory.py"
+      ]
+    },
+    {
+      "name": "pr_2637_fail_closed_memory",
+      "source_ref": "upstream/pull/2637/head",
+      "origin_ref": "origin/krz/memory-fail-closed-complete",
+      "source_base": "d0a86d409fab377f9c642d1f3680b6ece7f97b8a",
+      "source_head": "c8770aba36e809e3d5374ac2dd49b7e9340d5f98",
+      "current_remote_head": "c8770aba36e809e3d5374ac2dd49b7e9340d5f98",
+      "source_patch_id": "7fb58b5dd276037bc671794d7a4aecc46f7d25ce",
+      "integration_commit": "23d833ff4b6d94ca9c916404212fa88a366254d1",
+      "integration_patch_id": "287d34c42c9c7331d83689ba9f34cba15900e301",
+      "coverage": "three-way integration preserves upstream handlers and PR 2636 scheduling while retaining fail-closed guards",
+      "paths": [
+        "headroom/memory/storage_router.py",
+        "headroom/proxy/handlers/anthropic.py",
+        "headroom/proxy/handlers/openai.py",
+        "headroom/proxy/memory_handler.py",
+        "tests/test_memory_handler_native_ops.py",
+        "tests/test_memory_handler_project_isolation.py",
+        "tests/test_memory_storage_router.py",
+        "tests/test_openai_responses_traffic_learner.py"
+      ]
+    },
+    {
+      "name": "traffic_learner_project_scope",
+      "source_ref": "origin/krz/project-scoped-traffic-learner",
+      "source_base": "3a18023da0574a7df8785b8821740e21bc46aa21",
+      "source_head": "0121d04ff4053a3c1f2b0b52c80035d63e373cbd",
+      "current_remote_head": "0121d04ff4053a3c1f2b0b52c80035d63e373cbd",
+      "source_patch_id": "d74af0340592f3a481928eee1b1add987b861eda",
+      "integration_commit": "615a05c0b34e082a7e4006fa2b695d410a8cfcd3",
+      "integration_patch_id": "d92829363d8670d6494bf68e456971f38210c00e",
+      "coverage": "three-way integration combines partitioned target state with upstream bounded caches and async discovery",
+      "paths": [
+        "headroom/learn/models.py",
+        "headroom/learn/writer.py",
+        "headroom/memory/backends/local.py",
+        "headroom/memory/core.py",
+        "headroom/memory/storage_router.py",
+        "headroom/memory/traffic_learner.py",
+        "headroom/proxy/handlers/anthropic.py",
+        "headroom/proxy/handlers/openai.py",
+        "headroom/proxy/memory_handler.py",
+        "tests/test_learn/test_writer.py",
+        "tests/test_memory/test_core_metadata_index_sync.py",
+        "tests/test_memory/test_traffic_learner.py",
+        "tests/test_openai_responses_traffic_learner.py",
+        "tests/test_traffic_learner_project_scope.py"
+      ]
+    },
+    {
+      "name": "pr_2638_installer_parity",
+      "source_ref": "upstream/pull/2638/head",
+      "origin_ref": "origin/krz/install-memory-parity",
+      "source_base": "675d13f08d42455c8fa17bda878c1a11b905cee4",
+      "source_head": "acd054ad75396dd70173bcc2d9f2d4a9d5876b31",
+      "current_remote_head": "acd054ad75396dd70173bcc2d9f2d4a9d5876b31",
+      "source_patch_id": "8ac4f1609cd5b19c9b94223d0c2c060465ef6343",
+      "integration_commit": "df75ab7793ca05e603825534a9350c431260f13a",
+      "integration_patch_id": "8ac4f1609cd5b19c9b94223d0c2c060465ef6343",
+      "coverage": "exact final net patch including planner resolution and Docker learning test",
+      "paths": [
+        "headroom/cli/install.py",
+        "headroom/install/models.py",
+        "headroom/install/planner.py",
+        "headroom/install/state.py",
+        "tests/test_cli/test_install_cli.py",
+        "tests/test_install/test_memory_options.py",
+        "tests/test_install/test_proxy_mode_default.py",
+        "tests/test_install/test_state.py"
+      ]
+    }
+  ],
+  "integration_glue": [
+    {
+      "name": "pr_2636_pr_2637_test_compatibility",
+      "source_base": "23d833ff4b6d94ca9c916404212fa88a366254d1",
+      "integration_commit": "bf31b74f26d0a46ef4d44c5a12202c1efa6b6b1f",
+      "patch_id": "cde67a75c43abd5a1fce40a191149c76188443ef",
+      "paths": ["tests/test_codex_project_context.py"]
+    },
+    {
+      "name": "selected_recovery",
+      "source_base": "e3c5e2fa4370f685065f021436bce30870a590a1",
+      "source_head": "2f2bab3d1fb85d834b321673affcff382769ae00",
+      "source_patch_id": "bcab6d4a14c2ea1822dba65940b8f88689d68cc1",
+      "integration_commit": "6890b994c1f2ee53746761613c7341b288e9fcc6",
+      "integration_patch_id": "bcab6d4a14c2ea1822dba65940b8f88689d68cc1",
+      "excluded_path": "tests/test_cli/test_recover_codex.py",
+      "excluded_reason": "upstream binds a short relative AF_UNIX socket name",
+      "paths": [
+        "headroom/proxy/handlers/openai.py",
+        "headroom/transforms/kompress_compressor.py",
+        "tests/test_cli/test_serena_disable.py",
+        "tests/test_cli/test_wrap_bridge.py",
+        "tests/test_codex_ws_per_frame_memory.py",
+        "tests/test_install/test_providers.py",
+        "tests/test_kompress_preload_deferral.py",
+        "tests/test_proxy_health.py"
+      ]
+    },
+    {
+      "name": "canonical_local_manager",
+      "source_base": "b121223ec97e95c5a7a4c2c5e06a4655c7328e88",
+      "source_head": "7083976b11355fb7770c234617ec1fec253e156f",
+      "source_patch_id": "4eb0849429000682e376a191cec9a39db1673879",
+      "integration_commit": "2779627fa42150487347a677be67bd9ee9ab2cd2",
+      "integration_patch_id": "4eb0849429000682e376a191cec9a39db1673879",
+      "paths": ["local/handle-headroom.sh", "local/test-handle-headroom.zsh"]
+    },
+    {
+      "name": "manager_project_slot_delta",
+      "source_base": "550e2bdc78fe7a31f777c7ea1a3fc7ab4abdb80b",
+      "source_head": "e3c5e2fa4370f685065f021436bce30870a590a1",
+      "source_patch_id": "c5fa308d57aefb1478099ed879d54765f8067920",
+      "integration_commit": "43f27fad71a1ae9c22d7621757b8dc716072db79",
+      "integration_patch_id": "c5fa308d57aefb1478099ed879d54765f8067920",
+      "excluded_path": "local/integration-lock.json",
+      "excluded_reason": "stale Phase 6 lock regenerated for this candidate",
+      "paths": ["local/handle-headroom.sh", "local/test-handle-headroom.zsh"]
+    },
+    {
+      "name": "local_readiness_timeout",
+      "source_base": "43f27fad71a1ae9c22d7621757b8dc716072db79",
+      "integration_commit": "6d3c9bf8d44695128903c2200b116774a0129ae2",
+      "patch_id": "4fd688c5f2f47221db9a9dc232a203783807d825",
+      "change": "headroom/cli/install.py wait_ready timeout 45 to 240 seconds",
+      "paths": ["headroom/cli/install.py"]
+    }
+  ],
+  "coverage_matrix": [
+    {
+      "input": "upstream/main",
+      "head": "675d13f08d42455c8fa17bda878c1a11b905cee4",
+      "status": "base",
+      "evidence": "candidate is direct descendant; package 0.34.0 and uv.lock blob unchanged"
+    },
+    {
+      "input": "PR 2636",
+      "head": "af405f7c96de8bf21b789d82a5b1626abd4cb944",
+      "status": "included",
+      "evidence": "source and integration patch ID c7704bfbc7dcc7c9ff5f1886e305d9ea0b5b6648"
+    },
+    {
+      "input": "PR 2637",
+      "head": "c8770aba36e809e3d5374ac2dd49b7e9340d5f98",
+      "status": "included_with_reconciliation",
+      "evidence": "source patch 7fb58b5d; integration patch 287d34c4; combined 89-test seam passed"
+    },
+    {
+      "input": "waiting TrafficLearner",
+      "head": "0121d04ff4053a3c1f2b0b52c80035d63e373cbd",
+      "status": "included_with_reconciliation",
+      "evidence": "source patch d74af034; integration patch d9282936; focused 195-test seam passed"
+    },
+    {
+      "input": "PR 2638",
+      "head": "acd054ad75396dd70173bcc2d9f2d4a9d5876b31",
+      "status": "included",
+      "evidence": "source and integration patch ID 8ac4f1609cd5b19c9b94223d0c2c060465ef6343"
+    },
+    {
+      "input": "old origin/krz/local-integration",
+      "head": "0eebb3ca3fdb2bece36862739004ad50117ff793",
+      "status": "superseded",
+      "evidence": "all required topics rebuilt from current upstream; old lock regenerated; AF_UNIX rewrite obsolete; dirty timeout captured as 6d3c9bf"
+    },
+    {
+      "input": "canonical local manager",
+      "head": "7083976b11355fb7770c234617ec1fec253e156f",
+      "status": "included",
+      "evidence": "source and integration patch ID 4eb0849429000682e376a191cec9a39db1673879"
+    },
+    {
+      "input": "manager project-slot delta",
+      "head": "e3c5e2fa4370f685065f021436bce30870a590a1",
+      "status": "included_selected_paths",
+      "evidence": "manager paths patch ID c5fa308d57aefb1478099ed879d54765f8067920; stale lock omitted"
+    },
+    {
+      "input": "selected recovery",
+      "head": "2f2bab3d1fb85d834b321673affcff382769ae00",
+      "status": "included_selected_paths",
+      "evidence": "eight-path patch ID bcab6d4a14c2ea1822dba65940b8f88689d68cc1; obsolete recover_codex test omitted"
+    },
+    {
+      "input": "local readiness timeout",
+      "head": "6d3c9bf8d44695128903c2200b116774a0129ae2",
+      "status": "included",
+      "evidence": "patch ID 4fd688c5f2f47221db9a9dc232a203783807d825"
+    }
+  ],
+  "related_remote_refs": [
+    {
+      "ref": "origin/krz/codex-desktop-project-context",
+      "head": "af405f7c96de8bf21b789d82a5b1626abd4cb944",
+      "disposition": "covered by PR 2636"
+    },
+    {
+      "ref": "origin/krz/memory-fail-closed-complete",
+      "head": "c8770aba36e809e3d5374ac2dd49b7e9340d5f98",
+      "disposition": "covered by PR 2637"
+    },
+    {
+      "ref": "origin/krz/project-scoped-traffic-learner",
+      "head": "0121d04ff4053a3c1f2b0b52c80035d63e373cbd",
+      "disposition": "covered by waiting TrafficLearner topic"
+    },
+    {
+      "ref": "origin/krz/install-memory-parity",
+      "head": "acd054ad75396dd70173bcc2d9f2d4a9d5876b31",
+      "disposition": "covered by PR 2638"
+    },
+    {
+      "ref": "origin/krz/local-integration",
+      "head": "0eebb3ca3fdb2bece36862739004ad50117ff793",
+      "disposition": "superseded by this rebuilt candidate"
+    }
+  ],
+  "candidate": {
+    "host": "127.0.0.1",
+    "default_slot": "A",
+    "required_targets": ["claude", "codex"],
+    "optional_targets": ["opencode"],
+    "memory_storage": "project",
+    "min_evidence": 5,
+    "scratch_min_evidence": 2,
+    "global_db_imported": false
+  },
+  "topology": {
+    "project_slot_a": 8787,
+    "global_recovery_manual_only": 8788,
+    "project_slot_b": 8789,
+    "diagnostic_ports": [8790, 8791, 8792, 8793],
+    "automatic_global_fallback": false
+  },
+  "exclusions": [
+    {
+      "path": "tests/test_cli/test_recover_codex.py",
+      "reason": "current upstream independently fixes the macOS AF_UNIX limit with a short relative socket bind"
+    },
+    {
+      "path": "old local/integration-lock.json",
+      "reason": "references stale upstream, topic, candidate, and verification state"
+    },
+    {
+      "scope": "unrelated origin/krz branches",
+      "reason": "not linked by the approved integration records"
+    }
+  ]
+}
