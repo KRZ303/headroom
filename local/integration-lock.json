@@ -1,12 +1,12 @@
 {
   "schema_version": 2,
-  "generated_at_utc": "2026-08-09T21:39:47Z",
+  "generated_at_utc": "2026-08-09T22:06:44Z",
   "scope": "source-only",
   "integration": {
     "branch": "krz/local-integration-refresh-20260809",
     "upstream_base": "675d13f08d42455c8fa17bda878c1a11b905cee4",
     "current_upstream_head": "675d13f08d42455c8fa17bda878c1a11b905cee4",
-    "assembled_head_before_lock": "6d3c9bf8d44695128903c2200b116774a0129ae2",
+    "assembled_head_before_lock": "44f185b53c2ca90c9ae04cb15a3162903431d1b3",
     "package_version": "0.34.0",
     "uv_lock_blob": "b80d4d91ffee5f5879dd0f27aa16b0a06d163312",
     "runtime_verified": false,
@@ -23,7 +23,8 @@
     "6890b994c1f2ee53746761613c7341b288e9fcc6",
     "2779627fa42150487347a677be67bd9ee9ab2cd2",
     "43f27fad71a1ae9c22d7621757b8dc716072db79",
-    "6d3c9bf8d44695128903c2200b116774a0129ae2"
+    "6d3c9bf8d44695128903c2200b116774a0129ae2",
+    "44f185b53c2ca90c9ae04cb15a3162903431d1b3"
   ],
   "topics": [
     {
@@ -171,6 +172,16 @@
       "patch_id": "4fd688c5f2f47221db9a9dc232a203783807d825",
       "change": "headroom/cli/install.py wait_ready timeout 45 to 240 seconds",
       "paths": ["headroom/cli/install.py"]
+    },
+    {
+      "name": "traffic_learner_project_root_narrowing",
+      "source_base": "e52809cbc732082e3010f4c3db970b4fc0c2e80f",
+      "integration_commit": "44f185b53c2ca90c9ae04cb15a3162903431d1b3",
+      "patch_id": "f06ae7f486a6cfd52edd106cbb3554ceab42792e",
+      "change": "bind the optional request project root once before native path resolution",
+      "rationale": "satisfy mypy narrowing while preserving exact-root native writes; global, user, unresolved, and rootless targets remain fail-closed; legacy direct callers retain discovery",
+      "verification": "focused mypy passed; 156 TrafficLearner and project-scope tests passed; Ruff passed",
+      "paths": ["headroom/memory/traffic_learner.py"]
     }
   ],
   "coverage_matrix": [
@@ -233,6 +244,12 @@
       "head": "6d3c9bf8d44695128903c2200b116774a0129ae2",
       "status": "included",
       "evidence": "patch ID 4fd688c5f2f47221db9a9dc232a203783807d825"
+    },
+    {
+      "input": "TrafficLearner project-root narrowing",
+      "head": "44f185b53c2ca90c9ae04cb15a3162903431d1b3",
+      "status": "included",
+      "evidence": "patch ID f06ae7f486a6cfd52edd106cbb3554ceab42792e; focused mypy clean; 156 TrafficLearner and project-scope tests passed; rootless targets remain fail-closed"
     }
   ],
   "related_remote_refs": [
