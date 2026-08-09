@@ -640,11 +640,10 @@ class TrafficLearner:
             return
 
         target = state.target
+        project_root = target.project_root if target is not None else None
         # Resolved request targets may write native files only for an exact
         # project root. Global, user and rootless project-id targets stop here.
-        if target is not None and (
-            target.scope.mode.value != "project" or target.project_root is None
-        ):
+        if target is not None and (target.scope.mode.value != "project" or project_root is None):
             return
 
         agent = target.agent if target is not None else self.agent_type
@@ -682,12 +681,12 @@ class TrafficLearner:
         # Resolved traffic writes to its exact request root only. Legacy direct
         # users retain discovery behavior for backwards compatibility. Discovery
         # runs off the event loop because it can walk a large home directory.
-        if target is not None:
+        if project_root is not None:
             try:
                 roots = [
                     project
                     for project in await asyncio.to_thread(plugin.discover_projects)
-                    if project.project_path.resolve() == target.project_root.resolve()
+                    if project.project_path.resolve() == project_root.resolve()
                 ]
             except Exception as e:
                 logger.warning("discover_projects failed: %s", e)
