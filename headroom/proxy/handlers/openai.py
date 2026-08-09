@@ -5142,7 +5142,7 @@ class OpenAIHandlerMixin:
             or None
         )
         if client == "codex":
-            codex_project = CodexProjectContextResolver().resolve(
+            codex_project = await CodexProjectContextResolver().resolve_async(
                 headers=dict(request.headers),
                 body=body,
                 project_root_override=codex_project_root_override,
@@ -7028,7 +7028,7 @@ class OpenAIHandlerMixin:
 
                 resolved_project_root_override = ws_project_root_override
                 if client == "codex":
-                    resolved_project = ws_project_resolver.resolve(
+                    resolved_project = await ws_project_resolver.resolve_async(
                         headers=ws_headers,
                         body=frame_body,
                         pinned_cwd=ws_pinned_project_cwd,

@@ -4,6 +4,7 @@ import asyncio
 import json
 import sqlite3
 import sys
+import threading
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
@@ -128,6 +129,42 @@ def test_codex_http_projects_are_isolated_and_ws_mismatch_fails_closed(
     )
     assert mismatch.cwd is None
     assert mismatch.reason == "project_mismatch"
+
+    _append_turn(rollout_a, "turn-a", project_b)
+    changed_rollout = resolver.resolve(
+        headers={},
+        body={"client_metadata": {"thread_id": "thread-a", "turn_id": "turn-a"}},
+    )
+    assert changed_rollout.cwd is None
+    assert changed_rollout.reason == "turn_ambiguous"
+
+
+def test_cached_rollout_recanonicalizes_symlink_before_pinned_check(
+    monkeypatch, tmp_path: Path
+) -> None:
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    project_a = tmp_path / "a"
+    project_b = tmp_path / "b"
+    project_a.mkdir()
+    project_b.mkdir()
+    project_link = tmp_path / "current-project"
+    project_link.symlink_to(project_a, target_is_directory=True)
+    rollout = codex_home / "rollout.jsonl"
+    _seed_rollout(rollout, "turn", project_link)
+    _seed_thread(codex_home, "thread", rollout)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    resolver = CodexProjectContextResolver()
+    body = {"client_metadata": {"thread_id": "thread", "turn_id": "turn"}}
+
+    first = resolver.resolve(headers={}, body=body)
+    project_link.unlink()
+    project_link.symlink_to(project_b, target_is_directory=True)
+    second = resolver.resolve(headers={}, body=body, pinned_cwd=first.cwd)
+
+    assert first.cwd == project_a.resolve()
+    assert second.cwd is None
+    assert second.reason == "project_mismatch"
 
 
 def test_turn_specific_resume_and_fork_use_exact_context(monkeypatch, tmp_path: Path) -> None:
@@ -284,7 +321,7 @@ def test_explicit_overrides_precede_state_and_body_cwd(monkeypatch, tmp_path: Pa
     )
 
     assert project_id.source == "x-headroom-project-id"
-    assert project_id.project_key == "chosen"
+    assert project_id.project_key.startswith("chosen-")
     assert explicit_cwd.cwd == project_a.resolve()
     assert explicit_cwd.source == "x-headroom-cwd"
 
@@ -466,6 +503,49 @@ def test_http_resolution_does_not_mutate_body_or_forward_internal_metadata(
 
 
 @pytest.mark.asyncio
+async def test_http_project_resolution_does_not_block_event_loop(monkeypatch) -> None:
+    resolver_entered = threading.Event()
+    resolver_release = threading.Event()
+
+    def blocked_resolve(self, **kwargs):
+        resolver_entered.set()
+        assert resolver_release.wait(timeout=3)
+        raise RuntimeError("blocked resolver failed")
+
+    monkeypatch.setattr(CodexProjectContextResolver, "resolve", blocked_resolve)
+    monkeypatch.setattr("headroom.tokenizers.get_tokenizer", lambda model: _DummyTokenizer())
+    request = _build_request(
+        {"model": "gpt-5.4", "input": "hello"},
+        {"Authorization": "Bearer test", "X-Client": "codex"},
+    )
+    handler = _HTTPHandler()
+    progressed_before_release = False
+
+    async def unrelated_work() -> None:
+        nonlocal progressed_before_release
+        while not resolver_entered.is_set():
+            await asyncio.sleep(0)
+        progressed_before_release = not resolver_release.is_set()
+        resolver_release.set()
+
+    release_timer = threading.Timer(2, resolver_release.set)
+    release_timer.start()
+    try:
+        response, _ = await asyncio.gather(
+            handler.handle_openai_responses(request),
+            unrelated_work(),
+        )
+    finally:
+        resolver_release.set()
+        release_timer.cancel()
+        release_timer.join()
+
+    assert resolver_entered.is_set()
+    assert progressed_before_release
+    assert response.status_code == 200
+
+
+@pytest.mark.asyncio
 async def test_ws_mismatch_skips_project_memory_but_forwards_main_traffic(
     monkeypatch, tmp_path: Path
 ) -> None:
@@ -521,7 +601,8 @@ async def test_ws_mismatch_skips_project_memory_but_forwards_main_traffic(
         [
             json.dumps({"type": "response.created", "response": {"id": "r_1"}}),
             json.dumps({"type": "response.completed", "response": {"id": "r_1"}}),
-        ]
+        ],
+        hold_after_events=True,
     )
     websocket = _FakeWebSocket(frames=[first, mismatch])
     handler = _WSHandler()

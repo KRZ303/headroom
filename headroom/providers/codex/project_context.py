@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -9,6 +10,7 @@ import sqlite3
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Any, Literal, cast
 
@@ -26,6 +28,7 @@ _METADATA_HEADER = "x-codex-turn-metadata"
 _MAX_METADATA_BYTES = 16 * 1024
 _SQLITE_TIMEOUT_SECONDS = 0.1
 _SQLITE_ATTEMPTS = 2
+_ROLLOUT_CACHE_MAX_ENTRIES = 256
 
 
 @dataclass(frozen=True, slots=True)
@@ -121,6 +124,27 @@ class CodexProjectContextResolver:
             metadata_reason,
         )
 
+    async def resolve_async(
+        self,
+        *,
+        headers: Mapping[str, str],
+        body: Mapping[str, Any],
+        pinned_cwd: Path | None = None,
+        project_root_override: str | None = None,
+    ) -> CodexResolvedProject:
+        """Resolve optional project context without blocking async model traffic."""
+        try:
+            return await asyncio.to_thread(
+                self.resolve,
+                headers=headers,
+                body=body,
+                pinned_cwd=pinned_cwd,
+                project_root_override=project_root_override,
+            )
+        except Exception:
+            logger.warning("event=codex_project_resolution_failed", exc_info=True)
+            return self._skip("resolver_failed")
+
     @staticmethod
     def _header(headers: Mapping[str, str], name: str) -> str | None:
         lowered = name.lower()
@@ -150,6 +174,10 @@ class CodexProjectContextResolver:
             metadata = container.get("client_metadata")
             identity = self._identity_from_metadata(metadata)
             if identity is not None:
+                if sum(len(value.encode("utf-8")) for value in identity if value) > (
+                    _MAX_METADATA_BYTES
+                ):
+                    return None, "codex-client-metadata", "metadata_too_large"
                 return identity, "codex-client-metadata", "resolved"
         return None, "unresolved", "metadata_missing"
 
@@ -359,7 +387,30 @@ class CodexProjectContextResolver:
         return None, "state_locked"
 
     def _cwd_from_rollout(self, rollout: Path, turn_id: str) -> tuple[Path | None, str]:
-        matches: set[Path] = set()
+        try:
+            metadata = rollout.stat()
+        except OSError:
+            return None, "rollout_stale"
+        fingerprint = (
+            metadata.st_dev,
+            metadata.st_ino,
+            metadata.st_size,
+            metadata.st_mtime_ns,
+            metadata.st_ctime_ns,
+        )
+        raw_cwds, reason = _cached_raw_cwds_from_rollout(rollout, fingerprint, turn_id)
+        if reason != "resolved":
+            return None, reason
+        matches = {cwd for raw_cwd in raw_cwds if (cwd := self._canonical_cwd(raw_cwd))}
+        if len(matches) > 1:
+            return None, "turn_ambiguous"
+        if not matches:
+            return None, "turn_context_missing"
+        return next(iter(matches)), "resolved"
+
+    @staticmethod
+    def _read_raw_cwds_from_rollout(rollout: Path, turn_id: str) -> tuple[tuple[str, ...], str]:
+        matches: set[str] = set()
         truncated = False
         try:
             with rollout.open(encoding="utf-8") as handle:
@@ -378,18 +429,14 @@ class CodexProjectContextResolver:
                         continue
                     cwd = payload.get("cwd")
                     if isinstance(cwd, str):
-                        canonical = self._canonical_cwd(cwd)
-                        if canonical is not None:
-                            matches.add(canonical)
+                        matches.add(cwd)
         except OSError:
-            return None, "rollout_stale"
+            return (), "rollout_stale"
         if truncated:
-            return None, "rollout_truncated"
-        if len(matches) > 1:
-            return None, "turn_ambiguous"
+            return (), "rollout_truncated"
         if matches:
-            return next(iter(matches)), "resolved"
-        return None, "turn_context_missing"
+            return tuple(sorted(matches)), "resolved"
+        return (), "turn_context_missing"
 
     @staticmethod
     def _skip(reason: str) -> CodexResolvedProject:
@@ -400,6 +447,15 @@ class CodexProjectContextResolver:
             source="unresolved",
             reason=reason,
         )
+
+
+@lru_cache(maxsize=_ROLLOUT_CACHE_MAX_ENTRIES)
+def _cached_raw_cwds_from_rollout(
+    rollout: Path,
+    _fingerprint: tuple[int, int, int, int, int],
+    turn_id: str,
+) -> tuple[tuple[str, ...], str]:
+    return CodexProjectContextResolver._read_raw_cwds_from_rollout(rollout, turn_id)
 
 
 __all__ = ["CodexProjectContextResolver", "CodexResolvedProject"]
