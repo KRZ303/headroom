@@ -381,7 +381,13 @@ def test_unresolved_project_native_memory_tool_fails_closed(tmp_path: Path) -> N
                             "path": "/memories/canary.txt",
                             "file_text": "must not persist",
                         },
-                    }
+                    },
+                    {
+                        "type": "tool_use",
+                        "id": "custom-save",
+                        "name": "memory_save",
+                        "input": {"content": "must not persist"},
+                    },
                 ]
             },
             "alice",
@@ -390,8 +396,9 @@ def test_unresolved_project_native_memory_tool_fails_closed(tmp_path: Path) -> N
         )
     )
 
-    assert __import__("json").loads(results[0]["content"]) == {
-        "status": "skipped",
-        "reason": "project_unresolved",
-    }
+    assert all(
+        __import__("json").loads(result["content"])
+        == {"status": "skipped", "reason": "project_unresolved"}
+        for result in results
+    )
     assert _FakeBackend.instances == []

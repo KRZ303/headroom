@@ -1151,6 +1151,8 @@ your responses, not to drive new actions."""
         """
         tool_calls = self._extract_tool_calls(response, provider)
         results: list[dict[str, Any]] = []
+        project_unresolved = self.is_project_unresolved(request_context)
+        unresolved_result = json.dumps({"status": "skipped", "reason": "project_unresolved"})
 
         for tc in tool_calls:
             # `tc.get("function", {})` returns None for an explicit
@@ -1175,7 +1177,9 @@ your responses, not to drive new actions."""
                     input_data = {}
 
             # Handle native memory tool
-            if tool_name == NATIVE_MEMORY_TOOL_NAME:
+            if tool_name in ({NATIVE_MEMORY_TOOL_NAME} | MEMORY_TOOL_NAMES) and project_unresolved:
+                result_content = unresolved_result
+            elif tool_name == NATIVE_MEMORY_TOOL_NAME:
                 result_content = await self._execute_native_memory_tool(
                     input_data,
                     user_id,
