@@ -1806,6 +1806,7 @@ class OpenAIHandlerMixin:
         body: dict[str, Any],
         *,
         request_id: str,
+        request_context: Any = None,
     ) -> None:
         """Feed one Responses HTTP request into the live traffic learner."""
         traffic_learner = getattr(self, "traffic_learner", None)
@@ -1813,6 +1814,8 @@ class OpenAIHandlerMixin:
             return
         try:
             memory_handler = getattr(self, "memory_handler", None)
+            if memory_handler and memory_handler.is_project_unresolved(request_context):
+                return
             if (
                 traffic_learner._backend is None
                 and memory_handler
@@ -1842,6 +1845,7 @@ class OpenAIHandlerMixin:
         messages: list[dict[str, Any]],
         *,
         request_id: str,
+        request_context: Any = None,
     ) -> None:
         """Feed one chat/completions request into the live traffic learner.
 
@@ -1858,6 +1862,8 @@ class OpenAIHandlerMixin:
             return
         try:
             memory_handler = getattr(self, "memory_handler", None)
+            if memory_handler and memory_handler.is_project_unresolved(request_context):
+                return
             if (
                 traffic_learner._backend is None
                 and memory_handler
@@ -1885,6 +1891,7 @@ class OpenAIHandlerMixin:
         seen_call_ids: set[str],
         baseline: bool,
         request_id: str,
+        request_context: Any = None,
     ) -> None:
         """Feed one Codex WS ``response.create`` turn into the traffic learner.
 
@@ -1908,6 +1915,8 @@ class OpenAIHandlerMixin:
             return
         try:
             memory_handler = getattr(self, "memory_handler", None)
+            if memory_handler and memory_handler.is_project_unresolved(request_context):
+                return
             if (
                 traffic_learner._backend is None
                 and memory_handler
@@ -3439,8 +3448,6 @@ class OpenAIHandlerMixin:
         # compression mutates it, mirroring the Responses and Anthropic
         # ingestion paths. Without this, chat/completions traffic (Copilot CLI,
         # opencode, OpenAI SDKs) fed nothing to the learner (part of #2060).
-        await self._observe_openai_chat_traffic(original_client_messages, request_id=request_id)
-
         # Bypass: skip ALL compression for explicit opt-out
         _bypass = self._headroom_bypass_enabled(request.headers)
         if _bypass:
@@ -3573,6 +3580,12 @@ class OpenAIHandlerMixin:
                     getattr(self.memory_handler.config, "project_root_override", "") or None
                 ),
             )
+
+        await self._observe_openai_chat_traffic(
+            original_client_messages,
+            request_id=request_id,
+            request_context=memory_request_ctx,
+        )
 
         # Canonical memory-injection gate (parallels Anthropic). Pre-
         # PR-this the inline conjunction at the memory site silently
@@ -5646,8 +5659,6 @@ class OpenAIHandlerMixin:
 
         # Learn from the original client payload before memory context or
         # compression mutates it. This mirrors the Anthropic ingestion path.
-        await self._observe_openai_responses_traffic(body, request_id=request_id)
-
         # PR-A5 (P5-49): strip internal x-headroom-* from upstream-bound
         # headers AFTER `_extract_tags` reads them. Memory user-id reads
         # `request.headers` below.
@@ -5751,6 +5762,12 @@ class OpenAIHandlerMixin:
                     getattr(self.memory_handler.config, "project_root_override", "") or None
                 ),
             )
+
+        await self._observe_openai_responses_traffic(
+            body,
+            request_id=request_id,
+            request_context=memory_request_ctx,
+        )
 
         # Rate limiting
         if self.rate_limiter:
@@ -7475,17 +7492,11 @@ class OpenAIHandlerMixin:
             # this history adds no spurious evidence. Later frames learn only the
             # results appended after this point. `body` here is the original
             # client frame (parsed before memory injection / compression).
+            _ws_first_inner: dict[str, Any] | None = None
             if isinstance(body, dict) and body:
                 _ws_first_inner = (
                     body["response"] if isinstance(body.get("response"), dict) else body
                 )
-                if isinstance(_ws_first_inner, dict):
-                    await self._observe_openai_ws_response_create(
-                        _ws_first_inner,
-                        seen_call_ids=ws_learner_seen_call_ids,
-                        baseline=True,
-                        request_id=request_id,
-                    )
             ws_client_frames_total = 1
             ws_upstream_frames_total = 0
             ws_cancel_frames = 0
@@ -7641,6 +7652,15 @@ class OpenAIHandlerMixin:
                             getattr(self.memory_handler.config, "project_root_override", "") or None
                         ),
                     )
+
+                    if isinstance(_ws_first_inner, dict):
+                        await self._observe_openai_ws_response_create(
+                            _ws_first_inner,
+                            seen_call_ids=ws_learner_seen_call_ids,
+                            baseline=True,
+                            request_id=request_id,
+                            request_context=memory_request_ctx,
+                        )
 
                     # Debug: log what Codex sends so we can see the full tool list
                     existing_tool_names = [
@@ -8214,6 +8234,7 @@ class OpenAIHandlerMixin:
                             seen_call_ids=ws_learner_seen_call_ids,
                             baseline=False,
                             request_id=request_id,
+                            request_context=memory_request_ctx,
                         )
                         store_forced = _ensure_chatgpt_responses_store_false(
                             inner_payload,
