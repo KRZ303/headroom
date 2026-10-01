@@ -6626,13 +6626,13 @@ class OpenAIHandlerMixin:
                                 except (json.JSONDecodeError, TypeError):
                                     args = {}
 
-                                await self.memory_handler._ensure_initialized()
-                                if self.memory_handler._backend:
-                                    result = await self.memory_handler._execute_memory_tool(
-                                        name, args, memory_user_id, "openai"
-                                    )
-                                else:
-                                    result = json.dumps({"error": "Memory backend not initialized"})
+                                result = await self.memory_handler._execute_memory_tool(
+                                    name,
+                                    args,
+                                    memory_user_id,
+                                    "openai",
+                                    request_context=memory_request_ctx,
+                                )
 
                                 tool_outputs.append(
                                     {
@@ -9027,16 +9027,13 @@ class OpenAIHandlerMixin:
                                     except (json.JSONDecodeError, TypeError):
                                         fc_args = {}
 
-                                    await self.memory_handler._ensure_initialized()
-                                    if self.memory_handler._backend:
-                                        result = await self.memory_handler._execute_memory_tool(
-                                            fc_name,
-                                            fc_args,
-                                            memory_user_id,
-                                            "openai",
-                                        )
-                                    else:
-                                        result = json.dumps({"error": "backend not ready"})
+                                    result = await self.memory_handler._execute_memory_tool(
+                                        fc_name,
+                                        fc_args,
+                                        memory_user_id,
+                                        "openai",
+                                        request_context=memory_request_ctx,
+                                    )
 
                                     tool_outputs.append(
                                         {
