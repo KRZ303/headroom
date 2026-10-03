@@ -29,6 +29,7 @@ from tests.test_openai_codex_ws_lifecycle import (
     _FakeUpstream,
     _FakeWebSocket,
     _make_fake_websockets_module,
+    _MemoryWsHandler,
 )
 
 
@@ -462,7 +463,7 @@ def test_http_resolution_does_not_mutate_body_or_forward_internal_metadata(
     assert handler.retry_kwargs["original_body_bytes"] == json.dumps(body).encode()
     assert all(key.lower() != "x-codex-turn-metadata" for key in upstream_headers)
     assert all(not key.lower().startswith("x-headroom-") for key in upstream_headers)
-    assert handler.observed == [body]
+    assert handler.observed == []
 
     body_b = {
         "model": "gpt-5.4",
@@ -484,6 +485,7 @@ def test_http_resolution_does_not_mutate_body_or_forward_internal_metadata(
     assert response_b.status_code == 200
     assert handler_b.captured_request is not None
     assert handler_b.captured_request[3] == body_b
+    assert handler_b.observed == []
     assert handler.projects and handler_b.projects
     assert handler.projects[0] != handler_b.projects[0]
 
@@ -546,8 +548,9 @@ async def test_http_project_resolution_does_not_block_event_loop(monkeypatch) ->
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("handshake_metadata", [False, True, "transport-only", "conflicting"])
 async def test_ws_mismatch_skips_project_memory_but_forwards_main_traffic(
-    monkeypatch, tmp_path: Path
+    monkeypatch, tmp_path: Path, handshake_metadata: bool | str
 ) -> None:
     codex_home = tmp_path / "codex"
     codex_home.mkdir()
@@ -604,7 +607,16 @@ async def test_ws_mismatch_skips_project_memory_but_forwards_main_traffic(
         ],
         hold_after_events=True,
     )
+    if handshake_metadata == "transport-only":
+        first_body = json.loads(first)
+        first_body["response"]["client_metadata"] = {"keep": "yes"}
+        first = json.dumps(first_body)
     websocket = _FakeWebSocket(frames=[first, mismatch])
+    if handshake_metadata:
+        header_project = "b" if handshake_metadata == "conflicting" else "a"
+        websocket.headers["X-Codex-Turn-Metadata"] = json.dumps(
+            {"thread_id": f"thread-{header_project}", "turn_id": f"turn-{header_project}"}
+        )
     handler = _WSHandler()
     handler.config.memory_storage_mode = "project"
     memory = Memory()
@@ -616,6 +628,185 @@ async def test_ws_mismatch_skips_project_memory_but_forwards_main_traffic(
     assert memory.projects == [str(project_a.resolve())]
     assert len(upstream.sent) == 2
     assert json.loads(upstream.sent[1]) == json.loads(mismatch)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "tool_name", ["memory_search", "memory_save", "memory_update", "memory_delete"]
+)
+@pytest.mark.parametrize(
+    "second_project",
+    ["same", "mismatch", "unresolved", "missing", "overlap", "pipeline", "failed", "incomplete"],
+)
+@pytest.mark.parametrize("disable_injection", [False, True])
+@pytest.mark.parametrize("user_agent", ["codex-cli/0.5", "python-client"])
+async def test_ws_memory_dispatch_uses_current_turn_project(
+    monkeypatch,
+    tmp_path: Path,
+    tool_name: str,
+    second_project: str,
+    disable_injection: bool,
+    user_agent: str,
+) -> None:
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    for name in ("a", "b"):
+        project = tmp_path / name
+        project.mkdir()
+        rollout = codex_home / f"rollout-{name}.jsonl"
+        _seed_rollout(rollout, f"turn-{name}", project)
+        _seed_thread(codex_home, f"thread-{name}", rollout)
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+
+    def frame(project: str | None) -> str:
+        response = {"model": "gpt-5.4", "input": "hello"}
+        if project:
+            response["client_metadata"] = {
+                "thread_id": f"thread-{project}",
+                "turn_id": f"turn-{project}",
+            }
+        return json.dumps({"type": "response.create", "response": response})
+
+    first_completed = asyncio.Event()
+    init_blocked = asyncio.Event()
+    init_release = asyncio.Event()
+    events: asyncio.Queue[str] = asyncio.Queue()
+    function_call = {
+        "type": "function_call",
+        "id": "fc-1",
+        "call_id": "call-1",
+        "name": tool_name,
+        "arguments": "{}",
+    }
+
+    class Upstream(_FakeUpstream):
+        async def send(self, payload: str) -> None:
+            await super().send(payload)
+            if second_project == "pipeline" and len(self.sent) == 2:
+                return
+            if len(self.sent) == 3:
+                init_release.set()
+            response_id = (
+                "r-2"
+                if second_project == "pipeline" and len(self.sent) == 3
+                else f"r-{len(self.sent)}"
+            )
+            await events.put(
+                json.dumps({"type": "response.created", "response": {"id": response_id}})
+            )
+            failure_case = second_project in {"failed", "incomplete"}
+            if (
+                (len(self.sent) == 2 and not failure_case)
+                or (failure_case and len(self.sent) == 1)
+                or (second_project == "pipeline" and len(self.sent) == 3)
+            ):
+                for event_type in ("response.output_item.added", "response.output_item.done"):
+                    await events.put(json.dumps({"type": event_type, "item": function_call}))
+            terminal_type = (
+                f"response.{second_project}"
+                if failure_case and len(self.sent) == 1
+                else "response.completed"
+            )
+            await events.put(json.dumps({"type": terminal_type, "response": {"id": response_id}}))
+
+        async def _iter(self):
+            while True:
+                yield await events.get()
+
+    class WebSocket(_FakeWebSocket):
+        async def receive_text(self) -> str:
+            if len(self._frames) == 1:
+                await first_completed.wait()
+                if disable_injection:
+                    monkeypatch.setenv("HEADROOM_MEMORY_INJECTION_MODE", "disabled")
+            if second_project == "pipeline" and not self._frames and not init_release.is_set():
+                return frame("a")
+            if (
+                second_project == "overlap"
+                and not disable_injection
+                and not self._frames
+                and not init_release.is_set()
+            ):
+                await init_blocked.wait()
+                return frame(None)
+            return await super().receive_text()
+
+        async def send_text(self, text: str) -> None:
+            await super().send_text(text)
+            event = json.loads(text)
+            if event.get("type") in {
+                "response.completed",
+                "response.failed",
+                "response.incomplete",
+            }:
+                if event["response"]["id"] == "r-1":
+                    first_completed.set()
+                else:
+                    self.trigger_disconnect()
+
+    class Memory(_MemoryWsHandler):
+        def __init__(self) -> None:
+            super().__init__()
+            self.config.project_root_override = ""
+            self.executed = []
+
+        async def _execute_memory_tool(
+            self, name, args, user_id, provider, *, request_context=None
+        ):
+            self.executed.append((name, request_context))
+            return '{"memories": []}'
+
+        async def _ensure_initialized(self):
+            if second_project == "overlap":
+                init_blocked.set()
+                await init_release.wait()
+            await super()._ensure_initialized()
+
+    second = {
+        "same": "a",
+        "mismatch": "b",
+        "unresolved": "unknown",
+        "missing": None,
+        "overlap": "a",
+        "pipeline": None,
+        "failed": "a",
+        "incomplete": "a",
+    }[second_project]
+    upstream = Upstream([])
+    websocket = WebSocket(frames=[frame("a"), frame(second)], hold_after_initial=True)
+    websocket.headers["X-Codex-Turn-Metadata"] = json.dumps(
+        {"thread_id": "thread-a", "turn_id": "turn-a"}
+    )
+    websocket.headers["x-headroom-user-id"] = "user-1"
+    websocket.headers["user-agent"] = user_agent
+    handler = _WSHandler()
+    handler.memory_handler = memory = Memory()
+    observations = []
+
+    async def observe(payload, **kwargs):
+        observations.append(payload)
+
+    handler._observe_openai_ws_response_create = observe
+    with patch.dict(sys.modules, {"websockets": _make_fake_websockets_module(upstream)}):
+        await asyncio.wait_for(handler.handle_openai_responses_ws(websocket), timeout=3)
+
+    allowed = second_project == "same" and not disable_injection
+    if allowed:
+        assert len(memory.executed) == 1
+        assert memory.executed[0][0] == tool_name
+        assert memory.executed[0][1].project_root_override == str((tmp_path / "a").resolve())
+        assert len(upstream.sent) == 3
+    else:
+        assert memory.executed == []
+        expected_frames = (
+            3
+            if second_project == "pipeline"
+            or (second_project == "overlap" and not disable_injection)
+            else 2
+        )
+        assert len(upstream.sent) == expected_frames
+        assert any(json.loads(text).get("item") == function_call for text in websocket.sent_text)
+    assert observations == []
 
 
 @pytest.mark.asyncio
