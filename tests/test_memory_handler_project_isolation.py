@@ -268,7 +268,8 @@ def test_user_mode_partitions_by_user_id(tmp_path: Path) -> None:
 # ---------------------------------------------------------------------------
 
 
-def test_unresolved_project_returns_no_context(tmp_path: Path) -> None:
+@pytest.mark.parametrize("preinitialized", [False, True])
+def test_unresolved_project_returns_no_context(tmp_path: Path, preinitialized: bool) -> None:
     """No project signals + PROJECT mode + empty fallback → no memory injection."""
     cfg = MemoryConfig(
         enabled=True,
@@ -283,7 +284,9 @@ def test_unresolved_project_returns_no_context(tmp_path: Path) -> None:
     handler = MemoryHandler(cfg, agent_type="test")
 
     async def run() -> None:
-        await handler._ensure_initialized()
+        if preinitialized:
+            await handler._ensure_initialized()
+        backend_count = len(_FakeBackend.instances)
 
         # Request with NO project-resolution signal: no header, no cwd,
         # no parseable system-prompt cwd: line.
@@ -308,6 +311,9 @@ def test_unresolved_project_returns_no_context(tmp_path: Path) -> None:
 
         msgs = [{"role": "user", "content": "Just a friendly hello"}]
         context = await handler.search_and_format_context("alice", msgs, ctx_unresolved)
+
+        assert len(_FakeBackend.instances) == backend_count
+        assert handler.initialized is preinitialized
 
         # Fail-closed: no memory injected even though backends have data.
         assert context is None, (
