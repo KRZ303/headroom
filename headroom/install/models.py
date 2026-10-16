@@ -110,7 +110,9 @@ class DeploymentManifest:
     memory_storage_mode: str = "project"
     traffic_learning_min_evidence: int = 5
     memory_project_root: str = ""
-    telemetry_enabled: bool = True
+    # None: the operator chose neither --telemetry nor --no-telemetry.
+    # The default stays True for manifests saved before the field existed.
+    telemetry_enabled: bool | None = True
     image: str = "ghcr.io/headroomlabs-ai/headroom:latest"
     service_name: str = "headroom"
     container_name: str = "headroom-persistent"
