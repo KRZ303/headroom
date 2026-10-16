@@ -613,7 +613,8 @@ def test_install_status_probes_live_health_response(
     assert ".invalid" not in result.output
 
 
-def test_install_status_reports_effective_memory_options(monkeypatch) -> None:
+@pytest.mark.parametrize("env_threshold", [None, "", "11"])
+def test_install_status_reports_effective_memory_options(monkeypatch, env_threshold) -> None:
     runner = CliRunner()
 
     class Manifest:
@@ -629,6 +630,7 @@ def test_install_status_reports_effective_memory_options(monkeypatch) -> None:
         memory_enabled = True
         learn_enabled = False
         memory_storage_mode = "global"
+        base_env = {} if env_threshold is None else {"HEADROOM_MIN_EVIDENCE": env_threshold}
         traffic_learning_min_evidence = 7
         memory_project_root = "/tmp/scratch-project"
 
@@ -644,7 +646,7 @@ def test_install_status_reports_effective_memory_options(monkeypatch) -> None:
     assert "Memory:     enabled" in result.output
     assert "Learning:   disabled" in result.output
     assert "Storage:    global" in result.output
-    assert "Min evidence: 7" in result.output
+    assert f"Min evidence: {env_threshold or 7}" in result.output
     assert "Project root: /tmp/scratch-project" in result.output
 
 

@@ -1255,7 +1255,10 @@ def install_status(profile: str) -> None:
     )
     click.echo(f"Learning:   {learning}")
     click.echo(f"Storage:    {getattr(manifest, 'memory_storage_mode', 'project')}")
-    click.echo(f"Min evidence: {getattr(manifest, 'traffic_learning_min_evidence', 5)}")
+    min_evidence = getattr(manifest, "base_env", {}).get("HEADROOM_MIN_EVIDENCE") or getattr(
+        manifest, "traffic_learning_min_evidence", 5
+    )
+    click.echo(f"Min evidence: {min_evidence}")
     click.echo(f"Project root: {getattr(manifest, 'memory_project_root', '') or 'runtime default'}")
     click.echo(f"Port:       {manifest.port}")
     click.echo(f"Status:     {runtime_status(manifest)}")
